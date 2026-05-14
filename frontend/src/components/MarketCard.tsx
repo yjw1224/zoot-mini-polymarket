@@ -18,7 +18,8 @@ export default function MarketCard({ market, fakeUsdcAddress, signer, onUpdated,
   const isWinnerYes = Number(market.winningSide) === 0;
   const [yesPrice, setYesPrice] = useState<bigint | null>(null);
   const [oneFusdc, setOneFusdc] = useState<bigint | null>(null);
-  const [quantity, setQuantity] = useState('1');
+  const [userBalance, setUserBalance] = useState<bigint | null>(null);
+  const [amount, setAmount] = useState('10');
   const [pendingSide, setPendingSide] = useState<'0' | '1' | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -26,10 +27,10 @@ export default function MarketCard({ market, fakeUsdcAddress, signer, onUpdated,
 
   const noPrice = yesPrice !== null && oneFusdc !== null ? oneFusdc - yesPrice : null;
 
-  function getQuantityWei() {
+  function getAmountWei() {
     try {
-      const parsedQuantity = parseUnits(quantity || '0', 18);
-      return parsedQuantity > 0n ? parsedQuantity : null;
+      const parsedAmount = parseUnits(amount || '0', 18);
+      return parsedAmount > 0n ? parsedAmount : null;
     } catch {
       return null;
     }
@@ -38,18 +39,26 @@ export default function MarketCard({ market, fakeUsdcAddress, signer, onUpdated,
   useEffect(() => {
     let isMounted = true;
 
-    async function loadPrices() {
+    async function loadPricesAndBalance() {
       if (!signer) {
         return;
       }
 
       try {
         const marketContract = getMarketContract(market.address, signer);
-        const price = (await marketContract.yesPrice()) as bigint;
-        const pricePerSet = (await marketContract.PRICE_PER_SET()) as bigint;
+        const usdc = getUsdcContract(fakeUsdcAddress, signer);
+        const address = await signer.getAddress();
+        
+        const [price, pricePerSet, balance] = await Promise.all([
+          marketContract.yesPrice(),
+          marketContract.PRICE_PER_SET(),
+          usdc.balanceOf(address)
+        ]);
+
         if (isMounted) {
-          setYesPrice(price);
-          setOneFusdc(pricePerSet);
+          setYesPrice(price as bigint);
+          setOneFusdc(pricePerSet as bigint);
+          setUserBalance(balance as bigint);
         }
       } catch {
         if (isMounted) {
@@ -59,23 +68,35 @@ export default function MarketCard({ market, fakeUsdcAddress, signer, onUpdated,
       }
     }
 
-    loadPrices();
+    loadPricesAndBalance();
 
     return () => {
       isMounted = false;
     };
-  }, [market.address, signer]);
+  }, [market.address, signer, fakeUsdcAddress, isConfirmOpen]);
 
   function openConfirm(side: '0' | '1') {
     setPendingSide(side);
     setStatus(null);
 
-    if (getQuantityWei() === null) {
-      setStatus('수량을 먼저 입력하세요.');
+    if (getAmountWei() === null) {
+      setStatus('베팅 금액을 먼저 입력하세요.');
       return;
     }
 
     setIsConfirmOpen(true);
+  }
+
+  function handlePercent(percent: number) {
+    if (userBalance) {
+      const targetWei = (userBalance * BigInt(percent)) / 100n;
+      setAmount(formatUnits(targetWei, 18));
+    }
+  }
+
+  function handleAddAmounts(addValue: number) {
+    const current = parseFloat(amount || '0');
+    setAmount((current + addValue).toString());
   }
 
   async function handleBet() {
@@ -89,22 +110,14 @@ export default function MarketCard({ market, fakeUsdcAddress, signer, onUpdated,
       return;
     }
 
-    const quantityWei = getQuantityWei();
-    if (quantityWei === null) {
-      setStatus('수량을 먼저 입력하세요.');
+    const amountWei = getAmountWei();
+    if (amountWei === null || amountWei <= 0n) {
+      setStatus('베팅 금액이 올바르지 않습니다.');
       return;
     }
 
     if (oneFusdc === null) {
       setStatus('컨트랙트 값을 불러올 수 없습니다.');
-      return;
-    }
-
-    const price = pendingSide === '0' ? yesPrice ?? DEFAULT_YES_PRICE : noPrice ?? (oneFusdc - DEFAULT_YES_PRICE);
-    const amountWei = (quantityWei * price) / oneFusdc;
-
-    if (amountWei <= 0n) {
-      setStatus('베팅 금액이 올바르지 않습니다.');
       return;
     }
 
@@ -133,9 +146,9 @@ export default function MarketCard({ market, fakeUsdcAddress, signer, onUpdated,
     }
   }
 
-  const quantityWei = getQuantityWei();
+  const amountWei = getAmountWei();
   const previewPrice = pendingSide === '0' ? yesPrice ?? DEFAULT_YES_PRICE : noPrice ?? (oneFusdc ?? 1_000000000000000000n) - DEFAULT_YES_PRICE;
-  const previewAmountWei = quantityWei !== null && oneFusdc !== null ? (quantityWei * previewPrice) / oneFusdc : null;
+  const previewSharesWei = amountWei !== null && oneFusdc !== null ? (amountWei * oneFusdc) / previewPrice : null;
 
   return (
     <article
@@ -168,7 +181,15 @@ export default function MarketCard({ market, fakeUsdcAddress, signer, onUpdated,
             </div>
 
             {!compact ? (
-              <p className="text-sm text-slate-300">Status: {isResolved ? `Resolved (${isWinnerYes ? 'YES' : 'NO'})` : 'Open'}</p>
+              <div className="space-y-4">
+                {market.metadata.rules ? (
+                  <div className="rounded-xl bg-slate-900/50 p-4 text-sm text-slate-300">
+                    <h4 className="mb-2 font-semibold text-white">Rules / Description</h4>
+                    <p className="whitespace-pre-wrap leading-relaxed">{market.metadata.rules}</p>
+                  </div>
+                ) : null}
+                <p className="text-sm text-slate-300">Status: {isResolved ? `Resolved (${isWinnerYes ? 'YES' : 'NO'})` : 'Open'}</p>
+              </div>
             ) : null}
           </div>
 
@@ -211,35 +232,55 @@ export default function MarketCard({ market, fakeUsdcAddress, signer, onUpdated,
 
             {!compact ? (
               <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-                <label className="mb-2 block text-xs uppercase tracking-wide text-slate-400">수량</label>
-                <input
-                  value={quantity}
-                  onChange={(event) => setQuantity(event.target.value)}
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  placeholder="예: 10"
-                  className="w-full rounded-2xl border border-white/10 bg-slate-950 px-4 py-4 text-lg text-white outline-none placeholder:text-slate-500"
-                />
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs uppercase tracking-wide text-slate-400">투자 금액 (fUSDC)</label>
+                  {userBalance !== null ? (
+                    <span className="text-xs text-slate-500">잔액: {formatUnits(userBalance, 18)} fUSDC</span>
+                  ) : null}
+                </div>
+                
+                <div className="flex items-center gap-2 mb-3">
+                  <input
+                    value={amount}
+                    onChange={(event) => setAmount(event.target.value)}
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="예: 10"
+                    className="flex-1 w-0 rounded-xl border border-white/10 bg-slate-950 px-4 py-3 text-lg text-white outline-none placeholder:text-slate-500"
+                  />
+                  <div className="flex flex-col gap-1 w-20">
+                    <button type="button" onClick={() => handleAddAmounts(10)} className="rounded bg-white/5 py-1 text-xs text-slate-300 hover:bg-white/10">+10</button>
+                    <button type="button" onClick={() => handleAddAmounts(100)} className="rounded bg-white/5 py-1 text-xs text-slate-300 hover:bg-white/10">+100</button>
+                    <button type="button" onClick={() => handleAddAmounts(1000)} className="rounded bg-white/5 py-1 text-xs text-slate-300 hover:bg-white/10">+1000</button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 mb-4">
+                  <button type="button" onClick={() => handlePercent(10)} className="flex-1 rounded-lg bg-white/5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10">10%</button>
+                  <button type="button" onClick={() => handlePercent(25)} className="flex-1 rounded-lg bg-white/5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10">25%</button>
+                  <button type="button" onClick={() => handlePercent(50)} className="flex-1 rounded-lg bg-white/5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10">50%</button>
+                  <button type="button" onClick={() => handlePercent(100)} className="flex-1 rounded-lg bg-sky-500/20 py-1.5 text-xs font-medium text-sky-300 transition hover:bg-sky-500/40">100%</button>
+                </div>
 
                 {yesPrice !== null ? (
-                  <p className="mt-3 text-sm text-slate-400">
+                  <p className="text-sm text-slate-400">
                     YES {formatUnits(yesPrice, 18)} fUSDC / NO {formatUnits(noPrice ?? 0n, 18)} fUSDC
                   </p>
                 ) : null}
 
-                <p className="mt-3 text-xs text-slate-500">수량 입력 후 왼쪽 YES 또는 NO를 누르면 확인창이 뜹니다.</p>
+                <p className="mt-2 text-xs text-slate-500">금액 입력 후 왼쪽 YES 또는 NO를 누르면 매수되는 수량(Shares)을 확인 가능합니다.</p>
               </div>
             ) : null}
           </div>
 
-          {isConfirmOpen && quantityWei !== null ? (
+          {isConfirmOpen && amountWei !== null ? (
             <div className="rounded-2xl border border-white/10 bg-slate-950 p-4">
               <p className="text-sm font-semibold text-white">베팅 확인</p>
               <div className="mt-3 space-y-1 text-sm text-slate-300">
-                <p>방향: {pendingSide === '0' ? 'YES' : 'NO'}</p>
-                <p>수량: {formatUnits(quantityWei, 18)}</p>
-                <p>예상 지불액: {formatUnits(previewAmountWei ?? 0n, 18)} fUSDC</p>
+                <p>방향: {pendingSide === '0' ? 'YES' : 'NO'} 매수</p>
+                <p>지불액 (투자): {formatUnits(amountWei, 18)} fUSDC</p>
+                <p>획득 예상 수량 (Shares): <span className="font-semibold text-emerald-400">{formatUnits(previewSharesWei ?? 0n, 18)}</span></p>
               </div>
               <div className="mt-4 flex flex-wrap gap-3">
                 <button

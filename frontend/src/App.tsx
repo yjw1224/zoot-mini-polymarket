@@ -1,12 +1,12 @@
-import { BrowserProvider } from 'ethers';
+import { BrowserProvider, Contract, formatUnits } from 'ethers';
 import { useEffect, useMemo, useState } from 'react';
 import CreateMarketPage from './pages/CreateMarketPage';
 import HomePage from './pages/HomePage';
 import MarketsPage from './pages/MarketsPage';
 import MarketDetailPage from './pages/MarketDetailPage';
-import type { MarketSummary } from './lib/contracts';
+import { FACTORY_ABI, USDC_ABI, type MarketSummary } from './lib/contracts';
 
-type Page = 'home' | 'markets' | 'create';
+type Page = 'home' | 'markets' | 'create' | 'detail';
 const SEPOLIA_CHAIN_ID = 11155111n;
 const SEPOLIA_CHAIN_ID_HEX = '0xaa36a7';
 
@@ -25,6 +25,8 @@ export default function App() {
   const [provider, setProvider] = useState<BrowserProvider | null>(null);
   const [signer, setSigner] = useState<import('ethers').Signer | null>(null);
   const [account, setAccount] = useState<string | null>(null);
+  const [fusdcBalance, setFusdcBalance] = useState<string | null>(null);
+  const [isFauceting, setIsFauceting] = useState(false);
   const [networkChainId, setNetworkChainId] = useState<bigint | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
@@ -135,6 +137,48 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadBalance() {
+      if (!provider || !account || !factoryAddress || !isSepolia) {
+        setFusdcBalance(null);
+        return;
+      }
+      try {
+        const factory = new Contract(factoryAddress, FACTORY_ABI, provider);
+        const usdcAddr = await factory.fakeUSDCToken();
+        const usdc = new Contract(usdcAddr, USDC_ABI, provider);
+        const bal = await usdc.balanceOf(account);
+        if (!cancelled) setFusdcBalance(formatUnits(bal, 18));
+      } catch {
+        if (!cancelled) setFusdcBalance(null);
+      }
+    }
+    void loadBalance();
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, account, factoryAddress, isSepolia, refreshMarkets]);
+
+  async function handleFaucet() {
+    if (!signer || !factoryAddress || !isSepolia) return;
+    setIsFauceting(true);
+    setWalletError(null);
+    try {
+      const factory = new Contract(factoryAddress, FACTORY_ABI, signer);
+      const usdcAddr = await factory.fakeUSDCToken();
+      const usdc = new Contract(usdcAddr, USDC_ABI, signer);
+      const tx = await usdc.faucet();
+      await tx.wait();
+      setRefreshMarkets((v) => v + 1); // trigger balance refresh
+      alert('1,000 fUSDC 충전 완료!');
+    } catch (e) {
+      setWalletError(e instanceof Error ? e.message : 'Faucet failed');
+    } finally {
+      setIsFauceting(false);
+    }
+  }
+
   const navItems = useMemo(
     () => [
       { key: 'home' as const, label: 'Home' },
@@ -150,7 +194,23 @@ export default function App() {
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-sky-300">ZOOT</p>
           <h1 className="text-2xl font-semibold">Mini Polymarket</h1>
-          <p className="mt-1 text-xs text-slate-300">Network: {networkLabel}</p>
+          <div className="mt-1 flex items-center gap-3 text-xs text-slate-300">
+            <span>Network: {networkLabel}</span>
+            {account && fusdcBalance !== null ? (
+              <span className="flex items-center gap-2 rounded-full bg-slate-900 px-2 py-0.5">
+                <span className="text-emerald-300">{Number(fusdcBalance).toLocaleString()} fUSDC</span>
+                <button
+                  type="button"
+                  onClick={handleFaucet}
+                  disabled={isFauceting}
+                  className="rounded-full bg-emerald-500/20 px-2 text-[10px] uppercase text-emerald-300 transition hover:bg-emerald-500/40 disabled:opacity-50"
+                  title="1,000 fUSDC 받기"
+                >
+                  {isFauceting ? '...' : '충전'}
+                </button>
+              </span>
+            ) : null}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -223,6 +283,7 @@ export default function App() {
             factoryAddress={factoryAddress}
             onBack={() => setPage('markets')}
             isSepolia={isSepolia}
+            onUpdated={() => setRefreshMarkets((v) => v + 1)}
           />
         ) : null}
       </main>

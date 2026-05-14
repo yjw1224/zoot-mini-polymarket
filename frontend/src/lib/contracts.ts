@@ -21,12 +21,18 @@ export const MARKET_ABI = [
   'function setResult(uint256 winner)',
   'function claim()',
   'function sellToken(uint256 id, uint256 amount)',
+  'event TokensBet(address indexed user, uint256 indexed targetId, uint256 usdcAmount, uint256 sharesReceived, uint256 priceAtBet)',
+  'event TokensSold(address indexed user, uint256 indexed targetId, uint256 sharesSold, uint256 usdcReceived, uint256 priceAtSell)',
+  'event TokensClaimed(address indexed user, uint256 usdcReceived)',
+  'event MarketResolved(uint256 winningSide)'
 ] as const;
 
 export const USDC_ABI = [
   'function approve(address spender, uint256 amount) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
+  'function balanceOf(address account) view returns (uint256)',
   'function decimals() view returns (uint8)',
+  'function faucet()',
 ] as const;
 
 export interface MarketSummary {
@@ -81,13 +87,14 @@ export function getUsdcContract(address: string, signerOrProvider: BrowserProvid
   return new Contract(address, USDC_ABI, signerOrProvider);
 }
 
-export function encodeCreateMarketMetadata(title: string, image: string): string {
+export function encodeCreateMarketMetadata(title: string, image: string, rules: string): string {
   return `data:application/json;base64,${btoa(
     unescape(
       encodeURIComponent(
         JSON.stringify({
           name: title,
           image,
+          rules,
         }),
       ),
     ),

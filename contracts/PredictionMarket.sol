@@ -11,12 +11,18 @@ contract PredictionMarket is ERC1155 {
     uint256 public constant PRICE_PER_SET = 1 * 10**18; // 1 fakeUSDC
     uint256 public yesPrice = 0.6 * 10**18; // YES 토큰 1개의 가격 (60센트)
 
-    IERC20 public fakeUSDCToken;
-    address public admin;
+    IERC20 public immutable fakeUSDCToken;
+    address public immutable admin;
+    uint256 public immutable endTime;
+    
     string public metadataURI;
-    uint256 public endTime;
     uint256 public winningSide;
     bool public isResolved;
+
+    event TokensBet(address indexed user, uint256 indexed targetId, uint256 usdcAmount, uint256 sharesReceived, uint256 priceAtBet);
+    event TokensSold(address indexed user, uint256 indexed targetId, uint256 sharesSold, uint256 usdcReceived, uint256 priceAtSell);
+    event TokensClaimed(address indexed user, uint256 usdcReceived);
+    event MarketResolved(uint256 winningSide);
 
     constructor(
         address _usdcAddress,
@@ -35,7 +41,7 @@ contract PredictionMarket is ERC1155 {
         _;
     }
 
-    function bet(uint256 _targetId, uint256 _usdcAmount) public {
+    function bet(uint256 _targetId, uint256 _usdcAmount) external {
         require(!isResolved, "Market already resolved");
         require(block.timestamp < endTime, "Market already ended");
         require(_targetId == YES || _targetId == NO, "Invalid token ID");
@@ -54,9 +60,11 @@ contract PredictionMarket is ERC1155 {
 
         uint256 opponentId = (_targetId == YES) ? NO : YES;
         _burn(msg.sender, opponentId, tokenAmount);
+
+        emit TokensBet(msg.sender, _targetId, _usdcAmount, tokenAmount, currentPrice);
     }
 
-    function mint(uint256 _amount) public {
+    function mint(uint256 _amount) external {
         require(_amount > 0, "Amount must be greater than zero");
         require(block.timestamp < endTime, "Market already ended");
 
@@ -73,16 +81,18 @@ contract PredictionMarket is ERC1155 {
         return (balanceOf(msg.sender, YES), balanceOf(msg.sender, NO));
     }
 
-    function setResult(uint256 _winner) public onlyAdmin {
+    function setResult(uint256 _winner) external onlyAdmin {
         require(!isResolved, "Already Resolved");
         require(_winner == YES || _winner == NO, "Invalid Winner");
         require(block.timestamp >= endTime, "Market not ended yet");
 
         winningSide = _winner;
         isResolved = true;
+
+        emit MarketResolved(_winner);
     }
 
-    function claim() public {
+    function claim() external {
         require(isResolved, "Market not resolved yet");
 
         uint256 userBalance = balanceOf(msg.sender, winningSide);
@@ -95,9 +105,11 @@ contract PredictionMarket is ERC1155 {
 
         uint256 totalPayout = userBalance * PRICE_PER_SET;
         fakeUSDCToken.transfer(msg.sender, totalPayout);
+
+        emit TokensClaimed(msg.sender, totalPayout);
     }
 
-    function sellToken(uint256 _id, uint256 _amount) public {
+    function sellToken(uint256 _id, uint256 _amount) external {
         require(!isResolved, "Market already resolved");
         require(block.timestamp < endTime, "Market already ended");
         
@@ -114,5 +126,7 @@ contract PredictionMarket is ERC1155 {
 
         uint256 payout = (_amount * currentPrice) / PRICE_PER_SET;
         require(fakeUSDCToken.transfer(msg.sender, payout), "USDC transfer failed");
+
+        emit TokensSold(msg.sender, _id, _amount, payout, currentPrice);
     }
 }

@@ -12,6 +12,7 @@ interface CreateMarketPageProps {
 export default function CreateMarketPage({ signer, factoryAddress, onCreated, isSepolia }: CreateMarketPageProps) {
   const [title, setTitle] = useState('');
   const [image, setImage] = useState('');
+  const [rules, setRules] = useState('');
   const [endTime, setEndTime] = useState('');
   const [status, setStatus] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -48,7 +49,7 @@ export default function CreateMarketPage({ signer, factoryAddress, onCreated, is
     setStatus('Market 생성 중...');
 
     try {
-      const metadataURI = encodeCreateMarketMetadata(title, image);
+      const metadataURI = encodeCreateMarketMetadata(title, image, rules);
       const factory = new Contract(factoryAddress, FACTORY_ABI, signer);
       const transaction = await factory.createMarket(metadataURI, parsedEndTime);
       const receipt = await transaction.wait();
@@ -67,6 +68,7 @@ export default function CreateMarketPage({ signer, factoryAddress, onCreated, is
       setStatus(marketAddress ? `Created: ${marketAddress}` : 'Market created');
       setTitle('');
       setImage('');
+      setRules('');
       setEndTime('');
       onCreated();
     } catch (createError) {
@@ -104,6 +106,17 @@ export default function CreateMarketPage({ signer, factoryAddress, onCreated, is
             onChange={(event) => setImage(event.target.value)}
             className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
             placeholder="https://... or ipfs://..."
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm text-slate-300">Rules / Description</label>
+          <textarea
+            value={rules}
+            onChange={(event) => setRules(event.target.value)}
+            rows={3}
+            className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
+            placeholder="승리 조건과 규칙을 상세하게 적어주세요."
           />
         </div>
 

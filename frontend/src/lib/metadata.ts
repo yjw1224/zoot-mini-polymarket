@@ -2,6 +2,7 @@ export interface MarketMetadata {
   name: string;
   image: string;
   description?: string;
+  rules?: string;
 }
 
 export function encodeMetadataUri(metadata: MarketMetadata): string {
@@ -17,6 +18,7 @@ export async function readMetadataUri(uri: string): Promise<MarketMetadata> {
     name: parsed.name ?? 'Untitled market',
     image: parsed.image ?? '',
     description: parsed.description ?? '',
+    rules: parsed.rules ?? '',
   };
 }
 
