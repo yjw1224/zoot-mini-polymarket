@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-contract SimplePredict is ERC1155 {
+contract PredictionMarket is ERC1155 {
     uint256 public constant YES = 0;
     uint256 public constant NO = 1;
     // 임의의 '1센트 가격' 설정.
@@ -13,12 +13,21 @@ contract SimplePredict is ERC1155 {
 
     IERC20 public fakeUSDCToken;
     address public admin;
+    string public metadataURI;
+    uint256 public endTime;
     uint256 public winningSide;
     bool public isResolved;
 
-    constructor(address _usdcAddress) ERC1155("") {
+    constructor(
+        address _usdcAddress,
+        address _admin,
+        string memory _metadataURI,
+        uint256 _endTime
+    ) ERC1155("") {
         fakeUSDCToken = IERC20(_usdcAddress);
-        admin = msg.sender;
+        admin = _admin;
+        metadataURI = _metadataURI;
+        endTime = _endTime;
     }
 
     modifier onlyAdmin() {
@@ -28,6 +37,7 @@ contract SimplePredict is ERC1155 {
 
     function bet(uint256 _targetId, uint256 _usdcAmount) public {
         require(!isResolved, "Market already resolved");
+        require(block.timestamp < endTime, "Market already ended");
         require(_targetId == YES || _targetId == NO, "Invalid token ID");
         require(_usdcAmount > 0, "Amount must be greater than zero");
 
@@ -48,6 +58,7 @@ contract SimplePredict is ERC1155 {
 
     function mint(uint256 _amount) public {
         require(_amount > 0, "Amount must be greater than zero");
+        require(block.timestamp < endTime, "Market already ended");
 
         uint256 totalCost = _amount * PRICE_PER_SET;
 
@@ -65,6 +76,7 @@ contract SimplePredict is ERC1155 {
     function setResult(uint256 _winner) public onlyAdmin {
         require(!isResolved, "Already Resolved");
         require(_winner == YES || _winner == NO, "Invalid Winner");
+        require(block.timestamp >= endTime, "Market not ended yet");
 
         winningSide = _winner;
         isResolved = true;
@@ -87,6 +99,7 @@ contract SimplePredict is ERC1155 {
 
     function sellToken(uint256 _id, uint256 _amount) public {
         require(!isResolved, "Market already resolved");
+        require(block.timestamp < endTime, "Market already ended");
         
         uint256 currentPrice;
         if (_id == YES) {
