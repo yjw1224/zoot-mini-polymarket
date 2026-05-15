@@ -4,9 +4,10 @@ import CreateMarketPage from './pages/CreateMarketPage';
 import HomePage from './pages/HomePage';
 import MarketsPage from './pages/MarketsPage';
 import MarketDetailPage from './pages/MarketDetailPage';
+import AssetsPage from './pages/AssetsPage';
 import { FACTORY_ABI, USDC_ABI, type MarketSummary } from './lib/contracts';
 
-type Page = 'home' | 'markets' | 'create' | 'detail';
+type Page = 'home' | 'markets' | 'create' | 'detail' | 'assets';
 const SEPOLIA_CHAIN_ID = 11155111n;
 const SEPOLIA_CHAIN_ID_HEX = '0xaa36a7';
 
@@ -184,6 +185,7 @@ export default function App() {
       { key: 'home' as const, label: 'Home' },
       { key: 'markets' as const, label: 'Betting' },
       { key: 'create' as const, label: 'Create' },
+      { key: 'assets' as const, label: '총 자산' },
     ],
     [],
   );
@@ -284,6 +286,21 @@ export default function App() {
             onBack={() => setPage('markets')}
             isSepolia={isSepolia}
             onUpdated={() => setRefreshMarkets((v) => v + 1)}
+          />
+        ) : null}
+
+        {page === 'assets' ? (
+          <AssetsPage
+            provider={provider}
+            signer={signer}
+            factoryAddress={factoryAddress}
+            isSepolia={isSepolia}
+            onBack={() => setPage('home')}
+            onUpdated={() => setRefreshMarkets((v) => v + 1)}
+            onOpenMarket={(market) => {
+              setSelectedMarket(market);
+              setPage('detail');
+            }}
           />
         ) : null}
       </main>
