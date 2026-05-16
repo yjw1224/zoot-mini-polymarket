@@ -3,33 +3,73 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract PredictionMarket is ERC1155 {
+contract PredictionMarket is ERC1155, EIP712, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     uint256 public constant YES = 0;
     uint256 public constant NO = 1;
-    // 임의의 '1센트 가격' 설정.
     uint256 public constant PRICE_PER_SET = 1 * 10**18; // 1 fakeUSDC
-    uint256 public yesPrice = 0.6 * 10**18; // YES 토큰 1개의 가격 (60센트)
+
+    bytes32 public constant ORDER_TYPEHASH = keccak256(
+        "Order(address maker,uint256 targetId,bool isBuy,uint256 price,uint256 amount,uint256 expiry,uint256 nonce)"
+    );
 
     IERC20 public immutable fakeUSDCToken;
     address public immutable admin;
     uint256 public immutable endTime;
     
     string public metadataURI;
-    uint256 public winningSide;
+    uint8 public winningSide;
     bool public isResolved;
 
-    event TokensBet(address indexed user, uint256 indexed targetId, uint256 usdcAmount, uint256 sharesReceived, uint256 priceAtBet);
-    event TokensSold(address indexed user, uint256 indexed targetId, uint256 sharesSold, uint256 usdcReceived, uint256 priceAtSell);
+    mapping(address => uint256) public minOrderNonce;
+    mapping(bytes32 => uint256) public orderFilledAmount;
+
+    error OnlyAdmin();
+    error MarketAlreadyResolved();
+    error MarketAlreadyEnded();
+    error MarketNotEndedYet();
+    error MarketNotResolvedYet();
+    error InvalidTokenId();
+    error InvalidWinner();
+    error AmountMustBeGreaterThanZero();
+    error NoWinningTokens();
+    error InvalidMaker();
+    error InvalidPrice();
+    error OrderExpired();
+    error OrderCancelled();
+    error InvalidSignature();
+    error OrderFullyFilled();
+    error FillExceedsRemainingAmount();
+    error FillTooSmall();
+    error ArrayLengthMismatch();
+
+    struct Order {
+        address maker;
+        uint256 targetId;
+        bool isBuy;
+        uint256 price;
+        uint256 amount;
+        uint256 expiry;
+        uint256 nonce;
+    }
+
     event TokensClaimed(address indexed user, uint256 usdcReceived);
     event MarketResolved(uint256 winningSide);
+    event OrderFilled(bytes32 indexed orderHash, address indexed maker, address indexed taker, uint256 targetId, bool isBuy, uint256 price, uint256 amount, uint256 usdcAmount);
+    event OrdersCancelled(address indexed maker, uint256 minNonce);
 
     constructor(
         address _usdcAddress,
         address _admin,
         string memory _metadataURI,
         uint256 _endTime
-    ) ERC1155("") {
+    ) ERC1155("") EIP712("PredictionMarket", "1") {
         fakeUSDCToken = IERC20(_usdcAddress);
         admin = _admin;
         metadataURI = _metadataURI;
@@ -41,92 +81,107 @@ contract PredictionMarket is ERC1155 {
         _;
     }
 
-    function bet(uint256 _targetId, uint256 _usdcAmount) external {
-        require(!isResolved, "Market already resolved");
-        require(block.timestamp < endTime, "Market already ended");
-        require(_targetId == YES || _targetId == NO, "Invalid token ID");
-        require(_usdcAmount > 0, "Amount must be greater than zero");
-
-        // 1. 현재 가격 결정 (YES인지 NO인지)
-        uint256 currentPrice = (_targetId == YES) ? yesPrice : (PRICE_PER_SET - yesPrice);
-
-        // 2. 구매 가능한 토큰 수량 계산: (지불금액 * 1 fUSDC) / 가격
-        uint256 tokenAmount = (_usdcAmount * PRICE_PER_SET) / currentPrice;
-
-        require(fakeUSDCToken.transferFrom(msg.sender, address(this), _usdcAmount), "USDC transfer failed.");
-
-        _mint(msg.sender, YES, tokenAmount, "");
-        _mint(msg.sender, NO, tokenAmount, "");
-
-        uint256 opponentId = (_targetId == YES) ? NO : YES;
-        _burn(msg.sender, opponentId, tokenAmount);
-
-        emit TokensBet(msg.sender, _targetId, _usdcAmount, tokenAmount, currentPrice);
-    }
-
-    function mint(uint256 _amount) external {
-        require(_amount > 0, "Amount must be greater than zero");
-        require(block.timestamp < endTime, "Market already ended");
-
-        uint256 totalCost = _amount * PRICE_PER_SET;
-
-        require(fakeUSDCToken.transferFrom(msg.sender, address(this), totalCost), "fakeUSDC transfer failed.");
-        
-        _mint(msg.sender, YES, _amount, "");
-        _mint(msg.sender, NO, _amount, "");
-    }
-
-    // 디버깅용 함수
-    function getMyBalances() public view returns (uint256 yesRes, uint256 noRes) {
-        return (balanceOf(msg.sender, YES), balanceOf(msg.sender, NO));
-    }
-
     function setResult(uint256 _winner) external onlyAdmin {
-        require(!isResolved, "Already Resolved");
-        require(_winner == YES || _winner == NO, "Invalid Winner");
-        require(block.timestamp >= endTime, "Market not ended yet");
+        if (isResolved) revert MarketAlreadyResolved();
+        if (_winner != YES && _winner != NO) revert InvalidWinner();
+        if (block.timestamp < endTime) revert MarketNotEndedYet();
 
-        winningSide = _winner;
+        winningSide = uint8(_winner);
         isResolved = true;
 
         emit MarketResolved(_winner);
     }
 
-    function claim() external {
-        require(isResolved, "Market not resolved yet");
+    function claim() external nonReentrant {
+        if (!isResolved) revert MarketNotResolvedYet();
 
-        uint256 userBalance = balanceOf(msg.sender, winningSide);
-        require(userBalance > 0, "No winning Tokens");
+        uint256 userBalance = balanceOf(msg.sender, uint256(winningSide));
+        if (userBalance == 0) revert NoWinningTokens();
 
-        // 당첨 토큰 소각
-        _burn(msg.sender, winningSide, userBalance);
-
-        // 토큰 1개당 PRICE_PER_SET만큼 유저에게 전송 (원래는 1달러)
+        _burn(msg.sender, uint256(winningSide), userBalance);
 
         uint256 totalPayout = userBalance * PRICE_PER_SET;
-        fakeUSDCToken.transfer(msg.sender, totalPayout);
+        fakeUSDCToken.safeTransfer(msg.sender, totalPayout);
 
         emit TokensClaimed(msg.sender, totalPayout);
     }
 
-    function sellToken(uint256 _id, uint256 _amount) external {
-        require(!isResolved, "Market already resolved");
-        require(block.timestamp < endTime, "Market already ended");
-        
-        uint256 currentPrice;
-        if (_id == YES) {
-            currentPrice = yesPrice; // YES를 팔면 0.6달러씩 환급
-        } else if (_id == NO) {
-            currentPrice = (1 * PRICE_PER_SET) - yesPrice; // NO를 팔면 0.4달러씩 환급
+    function hashOrder(Order calldata order) public view returns (bytes32) {
+        return _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    ORDER_TYPEHASH,
+                    order.maker,
+                    order.targetId,
+                    order.isBuy,
+                    order.price,
+                    order.amount,
+                    order.expiry,
+                    order.nonce
+                )
+            )
+        );
+    }
+
+    function cancelOrdersUpTo(uint256 newMinNonce) external {
+        if (newMinNonce <= minOrderNonce[msg.sender]) revert OrderCancelled();
+        minOrderNonce[msg.sender] = newMinNonce;
+        emit OrdersCancelled(msg.sender, newMinNonce);
+    }
+
+    function fillOrder(Order calldata order, bytes calldata signature, uint256 fillAmount) external nonReentrant {
+        _fillOrder(order, signature, fillAmount, msg.sender);
+    }
+
+    function fillOrders(
+        Order[] calldata orders,
+        bytes[] calldata signatures,
+        uint256[] calldata fillAmounts
+    ) external nonReentrant {
+        uint256 length = orders.length;
+        if (signatures.length != length || fillAmounts.length != length) revert ArrayLengthMismatch();
+
+        address taker = msg.sender;
+        for (uint256 i = 0; i < length; ) {
+            _fillOrder(orders[i], signatures[i], fillAmounts[i], taker);
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function _fillOrder(Order calldata order, bytes calldata signature, uint256 fillAmount, address taker) internal {
+        if (isResolved) revert MarketAlreadyResolved();
+        if (block.timestamp >= endTime) revert MarketAlreadyEnded();
+        if (order.maker == address(0)) revert InvalidMaker();
+        if (order.targetId != YES && order.targetId != NO) revert InvalidTokenId();
+        if (fillAmount == 0 || order.amount == 0) revert AmountMustBeGreaterThanZero();
+        if (order.price == 0 || order.price > PRICE_PER_SET) revert InvalidPrice();
+        if (block.timestamp > order.expiry) revert OrderExpired();
+        if (order.nonce < minOrderNonce[order.maker]) revert OrderCancelled();
+
+        bytes32 orderHash = hashOrder(order);
+        address recoveredSigner = ECDSA.recover(orderHash, signature);
+        if (recoveredSigner != order.maker) revert InvalidSignature();
+
+        uint256 filledAmount = orderFilledAmount[orderHash];
+        if (filledAmount >= order.amount) revert OrderFullyFilled();
+        uint256 remainingAmount = order.amount - filledAmount;
+        if (fillAmount > remainingAmount) revert FillExceedsRemainingAmount();
+
+        uint256 usdcAmount = (fillAmount * order.price) / PRICE_PER_SET;
+        if (usdcAmount == 0) revert FillTooSmall();
+
+        orderFilledAmount[orderHash] = filledAmount + fillAmount;
+
+        if (order.isBuy) {
+            fakeUSDCToken.safeTransferFrom(order.maker, taker, usdcAmount);
+            _safeTransferFrom(taker, order.maker, order.targetId, fillAmount, "");
         } else {
-            revert("Invalid token ID");
+            _safeTransferFrom(order.maker, taker, order.targetId, fillAmount, "");
+            fakeUSDCToken.safeTransferFrom(taker, order.maker, usdcAmount);
         }
 
-        _burn(msg.sender, _id, _amount);
-
-        uint256 payout = (_amount * currentPrice) / PRICE_PER_SET;
-        require(fakeUSDCToken.transfer(msg.sender, payout), "USDC transfer failed");
-
-        emit TokensSold(msg.sender, _id, _amount, payout, currentPrice);
+        emit OrderFilled(orderHash, order.maker, taker, order.targetId, order.isBuy, order.price, fillAmount, usdcAmount);
     }
 }

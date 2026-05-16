@@ -1,7 +1,6 @@
 interface HomePageProps {
   account: string | null;
   factoryAddress: string;
-  onFactoryAddressChange: (value: string) => void;
   onConnectWallet: () => Promise<void>;
   isConnecting: boolean;
   walletError: string | null;
@@ -12,7 +11,6 @@ interface HomePageProps {
 export default function HomePage({
   account,
   factoryAddress,
-  onFactoryAddressChange,
   onConnectWallet,
   isConnecting,
   walletError,
@@ -53,14 +51,8 @@ export default function HomePage({
         <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
           <h2 className="mb-3 text-lg font-medium text-white">Factory</h2>
           <label className="block text-sm text-slate-300">Factory address</label>
-          <input
-            value={factoryAddress}
-            onChange={(event) => onFactoryAddressChange(event.target.value)}
-            placeholder="0x..."
-            className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
-          />
-          <p className="mt-2 text-xs text-slate-400">
-            이 주소가 있어야 Betting/Create 페이지에서 Factory와 연결됩니다.
+          <p className="mt-2 break-all rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white">
+            {factoryAddress || 'Not configured'}
           </p>
         </section>
       </div>

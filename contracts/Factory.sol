@@ -7,6 +7,9 @@ contract MarketFactory {
     address public immutable fakeUSDCToken;
     address[] public markets;
 
+    error EndTimeMustBeInFuture();
+    error MarketIndexOutOfBounds();
+
     event MarketCreated(
         address indexed market,
         address indexed admin,
@@ -22,7 +25,7 @@ contract MarketFactory {
         string calldata metadataURI,
         uint256 endTime
     ) external returns (address market) {
-        require(endTime > block.timestamp, "End time must be in the future");
+        if (endTime <= block.timestamp) revert EndTimeMustBeInFuture();
 
         PredictionMarket newMarket = new PredictionMarket(
             fakeUSDCToken,
@@ -41,7 +44,7 @@ contract MarketFactory {
     }
 
     function getMarket(uint256 index) external view returns (address) {
-        require(index < markets.length, "Market index out of bounds");
+        if (index >= markets.length) revert MarketIndexOutOfBounds();
         return markets[index];
     }
 }

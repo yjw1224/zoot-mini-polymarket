@@ -21,7 +21,7 @@ export default function App() {
   const [page, setPage] = useState<Page>('home');
   const [selectedMarket, setSelectedMarket] = useState<MarketSummary | null>(null);
   const [factoryAddress, setFactoryAddress] = useState(() => {
-    return localStorage.getItem('zoot-factory-address') ?? import.meta.env.VITE_FACTORY_ADDRESS ?? '';
+    return import.meta.env.VITE_FACTORY_ADDRESS ?? '';
   });
   const [provider, setProvider] = useState<BrowserProvider | null>(null);
   const [signer, setSigner] = useState<import('ethers').Signer | null>(null);
@@ -82,9 +82,7 @@ export default function App() {
     };
   }, [provider]);
 
-  useEffect(() => {
-    localStorage.setItem('zoot-factory-address', factoryAddress);
-  }, [factoryAddress]);
+
 
   const isSepolia = networkChainId === SEPOLIA_CHAIN_ID;
   const networkLabel = networkChainId == null ? 'Unknown' : isSepolia ? 'Sepolia' : `Chain ${networkChainId.toString()}`;
@@ -242,7 +240,6 @@ export default function App() {
           <HomePage
             account={account}
             factoryAddress={factoryAddress}
-            onFactoryAddressChange={setFactoryAddress}
             onConnectWallet={connectWallet}
             isConnecting={isConnecting}
             walletError={walletError}
