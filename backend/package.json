@@ -1,0 +1,26 @@
+{
+  "name": "zoot-mini-polymarket-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "@prisma/client": "^6.11.1",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.29.1",
+    "viem": "^2.49.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.18",
+    "prisma": "^6.11.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.0"
+  }
+}

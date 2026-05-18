@@ -181,61 +181,93 @@ export default function App() {
   const navItems = useMemo(
     () => [
       { key: 'home' as const, label: 'Home' },
-      { key: 'markets' as const, label: 'Betting' },
+      { key: 'markets' as const, label: 'Markets' },
       { key: 'create' as const, label: 'Create' },
-      { key: 'assets' as const, label: '총 자산' },
+      { key: 'assets' as const, label: 'Assets' },
     ],
     [],
   );
 
+  const shortAccount = account ? `${account.slice(0, 6)}...${account.slice(-4)}` : '';
+
   return (
-    <div className="mx-auto min-h-screen max-w-6xl px-4 py-6 text-white">
-      <header className="mb-8 flex flex-col gap-4 rounded-3xl border border-white/10 bg-white/5 p-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-sky-300">ZOOT</p>
-          <h1 className="text-2xl font-semibold">Mini Polymarket</h1>
-          <div className="mt-1 flex items-center gap-3 text-xs text-slate-300">
-            <span>Network: {networkLabel}</span>
+    <div className="pm-shell text-slate-900">
+      <header className="pm-topbar rounded-[28px] px-4 py-4 md:px-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={() => setPage('home')} className="flex items-center gap-3 text-left">
+              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#0f172a_0%,#2563eb_55%,#22c55e_100%)] text-sm font-bold text-white shadow-lg shadow-sky-500/20">
+                Z
+              </span>
+              <span>
+                <span className="block text-[11px] font-bold uppercase tracking-[0.34em] text-sky-600">ZOOT</span>
+                <span className="block text-lg font-semibold tracking-[-0.02em] text-slate-950">Mini Polymarket</span>
+              </span>
+            </button>
+
+            <span className="hidden h-10 w-px bg-slate-200 lg:block" />
+
+            <div className="hidden items-center gap-2 text-sm text-slate-500 lg:flex">
+              <span className="pm-chip">Network</span>
+              <span className={`pm-chip ${isSepolia ? 'pm-chip-yes' : 'pm-chip-no'}`}>{networkLabel}</span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-start gap-2 lg:justify-end">
+            <span className={`pm-chip ${isSepolia ? 'pm-chip-yes' : 'pm-chip-no'}`}>{networkLabel}</span>
             {account && fusdcBalance !== null ? (
-              <span className="flex items-center gap-2 rounded-full bg-slate-900 px-2 py-0.5">
-                <span className="text-emerald-300">{Number(fusdcBalance).toLocaleString()} fUSDC</span>
+              <span className="pm-chip">
+                <span className="text-emerald-600">{Number(fusdcBalance).toLocaleString()} fUSDC</span>
                 <button
                   type="button"
                   onClick={handleFaucet}
                   disabled={isFauceting}
-                  className="rounded-full bg-emerald-500/20 px-2 text-[10px] uppercase text-emerald-300 transition hover:bg-emerald-500/40 disabled:opacity-50"
+                  className="rounded-full bg-emerald-600/10 px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-700 transition hover:bg-emerald-600/15 disabled:opacity-50"
                   title="1,000 fUSDC 받기"
                 >
-                  {isFauceting ? '...' : '충전'}
+                  {isFauceting ? '...' : 'Faucet'}
                 </button>
               </span>
+            ) : null}
+            {account ? <span className="pm-chip font-mono text-[11px] text-slate-600">{shortAccount}</span> : null}
+            {!account ? (
+              <button
+                type="button"
+                onClick={connectWallet}
+                disabled={isConnecting}
+                className="pm-btn-primary disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isConnecting ? 'Connecting...' : 'Connect Wallet'}
+              </button>
             ) : null}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4">
           {navItems.map((item) => (
             <button
               key={item.key}
               type="button"
               onClick={() => setPage(item.key)}
-              className={`rounded-xl px-4 py-2 text-sm transition ${
-                page === item.key ? 'bg-sky-400 text-slate-950' : 'bg-white/5 text-white hover:bg-white/10'
-              }`}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${page === item.key
+                  ? 'bg-slate-950 text-white shadow-[0_10px_30px_rgba(15,23,42,0.18)]'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-950'
+                }`}
             >
               {item.label}
             </button>
           ))}
+          {account ? <span className="ml-auto hidden text-sm text-slate-500 md:inline">Connected</span> : null}
         </div>
       </header>
 
       {!isSepolia ? (
-        <div className="mb-6 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
+        <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 shadow-sm">
           프론트는 Sepolia만 사용합니다. MetaMask 네트워크를 Sepolia로 바꾼 뒤 다시 연결하세요.
         </div>
       ) : null}
 
-      <main className="space-y-8">
+      <main className="mt-6 space-y-8">
         {page === 'home' ? (
           <HomePage
             account={account}

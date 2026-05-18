@@ -79,69 +79,103 @@ export default function CreateMarketPage({ signer, factoryAddress, onCreated, is
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <p className="text-sm text-sky-300">Create</p>
-        <h1 className="text-3xl font-semibold text-white">New market</h1>
-        <p className="text-sm text-slate-300">title, image, endTime만 받아서 Factory에 연결합니다.</p>
-      </div>
-
-      {!isSepolia ? <p className="text-sm text-amber-300">Sepolia 네트워크에서만 market을 생성할 수 있습니다.</p> : null}
-
-      <form onSubmit={handleCreate} className="space-y-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-        <div>
-          <label className="block text-sm text-slate-300">Title</label>
-          <input
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
-            placeholder="Will ETH hit $10k?"
-          />
+    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <section className="pm-panel rounded-[32px] p-6 md:p-8">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="pm-kicker">Create</span>
+          <span className={`pm-chip ${isSepolia ? 'pm-chip-yes' : 'pm-chip-no'}`}>{isSepolia ? 'Sepolia ready' : 'Network mismatch'}</span>
         </div>
 
-        <div>
-          <label className="block text-sm text-slate-300">Image URL</label>
-          <input
-            value={image}
-            onChange={(event) => setImage(event.target.value)}
-            className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
-            placeholder="https://... or ipfs://..."
-          />
+        <div className="mt-5 max-w-2xl">
+          <h1 className="pm-section-title font-semibold tracking-tight text-slate-950">Launch a new market without changing the contract flow.</h1>
+          <p className="mt-3 text-base leading-7 text-slate-600">Only the visual system changes here. Title, image, rules, and end time still map directly to the same Factory transaction.</p>
         </div>
 
-        <div>
-          <label className="block text-sm text-slate-300">Rules / Description</label>
-          <textarea
-            value={rules}
-            onChange={(event) => setRules(event.target.value)}
-            rows={3}
-            className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
-            placeholder="승리 조건과 규칙을 상세하게 적어주세요."
-          />
-        </div>
+        {!isSepolia ? <div className="mt-5 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">Sepolia 네트워크에서만 market을 생성할 수 있습니다.</div> : null}
 
-        <div>
-          <label className="block text-sm text-slate-300">End time</label>
-          <input
-            value={endTime}
-            onChange={(event) => setEndTime(event.target.value)}
-            onFocus={openDatePicker}
-            onClick={openDatePicker}
-            type="datetime-local"
-            className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none"
-          />
-        </div>
+        <form onSubmit={handleCreate} className="mt-6 space-y-5">
+          <div>
+            <label className="pm-label">Title</label>
+            <input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              className="pm-input mt-2"
+              placeholder="Will ETH hit $10k?"
+            />
+          </div>
 
-        <button
-          type="submit"
-          disabled={isSubmitting}
-          className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {isSubmitting ? 'Creating...' : 'Create Market'}
-        </button>
+          <div>
+            <label className="pm-label">Image URL</label>
+            <input
+              value={image}
+              onChange={(event) => setImage(event.target.value)}
+              className="pm-input mt-2"
+              placeholder="https://... or ipfs://..."
+            />
+          </div>
 
-        {status ? <p className="text-sm text-slate-300">{status}</p> : null}
-      </form>
+          <div>
+            <label className="pm-label">Rules / Description</label>
+            <textarea
+              value={rules}
+              onChange={(event) => setRules(event.target.value)}
+              rows={4}
+              className="pm-textarea mt-2"
+              placeholder="승리 조건과 규칙을 상세하게 적어주세요."
+            />
+          </div>
+
+          <div>
+            <label className="pm-label">End time</label>
+            <input
+              value={endTime}
+              onChange={(event) => setEndTime(event.target.value)}
+              onFocus={openDatePicker}
+              onClick={openDatePicker}
+              type="datetime-local"
+              className="pm-input mt-2"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="pm-btn-primary disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {isSubmitting ? 'Creating...' : 'Create Market'}
+          </button>
+
+          {status ? <p className="text-sm font-medium text-slate-600">{status}</p> : null}
+        </form>
+      </section>
+
+      <aside className="space-y-4">
+        <section className="pm-panel rounded-[28px] p-5">
+          <p className="pm-kicker">Checklist</p>
+          <div className="mt-4 space-y-3 text-sm text-slate-600">
+            <div className="pm-statbox p-4">
+              <p className="font-semibold text-slate-950">1. Title</p>
+              <p className="mt-1">Keep it short and market-friendly.</p>
+            </div>
+            <div className="pm-statbox p-4">
+              <p className="font-semibold text-slate-950">2. Image</p>
+              <p className="mt-1">A strong thumbnail makes the market feel live.</p>
+            </div>
+            <div className="pm-statbox p-4">
+              <p className="font-semibold text-slate-950">3. Rules</p>
+              <p className="mt-1">Describe the resolution criteria clearly.</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="pm-panel rounded-[28px] p-5">
+          <p className="pm-kicker">Factory</p>
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Connected address</p>
+            <p className="mt-2 break-all text-sm font-medium text-slate-900">{factoryAddress || 'Not configured'}</p>
+          </div>
+        </section>
+      </aside>
     </div>
   );
 }

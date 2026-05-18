@@ -4,7 +4,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   root: 'frontend',
-  envDir: '..',
+  envDir: '.',
   plugins: [react(), tailwindcss()],
   server: {
     host: '0.0.0.0',

@@ -15,16 +15,13 @@ export const MARKET_ABI = [
   'function endTime() view returns (uint256)',
   'function isResolved() view returns (bool)',
   'function winningSide() view returns (uint256)',
-  'function yesPrice() view returns (uint256)',
   'function PRICE_PER_SET() view returns (uint256)',
   'function balanceOf(address account, uint256 id) view returns (uint256)',
-  'function bet(uint256 targetId, uint256 usdcAmount)',
   'function setResult(uint256 winner)',
   'function claim()',
-  'function sellToken(uint256 id, uint256 amount)',
+  'function setApprovalForAll(address operator, bool approved)',
+  'function isApprovedForAll(address account, address operator) view returns (bool)',
   'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
-  'event TokensBet(address indexed user, uint256 indexed targetId, uint256 usdcAmount, uint256 sharesReceived, uint256 priceAtBet)',
-  'event TokensSold(address indexed user, uint256 indexed targetId, uint256 sharesSold, uint256 usdcReceived, uint256 priceAtSell)',
   'event TokensClaimed(address indexed user, uint256 usdcReceived)',
   'event MarketResolved(uint256 winningSide)'
 ] as const;

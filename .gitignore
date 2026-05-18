@@ -16,10 +16,18 @@
 # Typechain output
 /types
 
+# Backend build output and local SQLite DB
+/backend/dist
+/backend/node_modules
+/backend/prisma/dev.db
+/backend/prisma/*.db-journal
+
 # Environment files
 .env
 .env.*
 !.env.example
+!frontend/.env.example
+!backend/.env.example
 
 # Hardhat coverage reports
 /coverage

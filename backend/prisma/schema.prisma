@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderStatus {
+  OPEN
+  FILLED
+  CANCELLED
+  EXPIRED
+}
+
+model Market {
+  id          String       @id @default(cuid())
+  address     String       @unique
+  metadataURI String?
+  endTime     BigInt?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  orders      MarketOrder[]
+  fills       TradeFill[]
+}
+
+model MarketOrder {
+  id                  String      @id @default(cuid())
+  marketAddress       String
+  orderHash           String      @unique
+  maker               String
+  targetId            Int
+  isBuy               Boolean
+  price               String
+  amount              String
+  filledAmount        String      @default("0")
+  expiry              BigInt
+  nonce               BigInt
+  signature           String
+  status              OrderStatus @default(OPEN)
+  isSystemGenerated   Boolean     @default(false)
+  linkedOrderHash     String?
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  market Market @relation(fields: [marketAddress], references: [address], onDelete: Cascade)
+
+  @@index([marketAddress, targetId, isBuy, price, status])
+  @@index([marketAddress, expiry])
+  @@index([marketAddress, maker])
+  @@index([isSystemGenerated])
+}
+
+model TradeFill {
+  id            String   @id @default(cuid())
+  marketAddress String
+  orderHash     String   @unique
+  maker         String
+  taker         String
+  targetId      Int
+  isBuy         Boolean
+  price         String
+  amount        String
+  usdcAmount    String
+  txHash        String
+  blockNumber   Int
+  createdAt     DateTime @default(now())
+
+  market Market @relation(fields: [marketAddress], references: [address], onDelete: Cascade)
+
+  @@index([marketAddress, createdAt])
+}

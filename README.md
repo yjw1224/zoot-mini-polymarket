@@ -10,15 +10,31 @@ Chainlink, api 오라클을 통하여 결과를 불러오고, 그에 따라 승�
 
 ### 1. 환경 변수 준비
 
-프로젝트 루트에 `.env` 파일을 만들고 아래 값을 넣습니다.
+환경 변수를 프런트/백엔드/하드햇으로 분리해서 둡니다.
 
 ```bash
+# /frontend/.env
+VITE_FACTORY_ADDRESS=0x...
+VITE_BACKEND_URL=https://silver-enigma-pqvv995g455f6j6-4000.app.github.dev/
+
+# /backend/.env
+PORT=4000
+HOST=0.0.0.0
+RPC_URL=https://...
+CHAIN_ID=11155111
+FACTORY_ADDRESS=0x...
+DATABASE_URL="file:./dev.db"
+CORS_ORIGIN=https://silver-enigma-pqvv995g455f6j6-5173.app.github.dev
+INDEX_START_BLOCK=0
+MATCHER_PRIVATE_KEY=0x... # optional, enables the on-chain matching worker
+MATCH_INTERVAL_MS=10000
+
+# /.env
 SEPOLIA_RPC_URL=https://...
 SEPOLIA_PRIVATE_KEY=0x...
-VITE_FACTORY_ADDRESS=0x...
 ```
 
-`.env.example`을 그대로 복사해 시작해도 됩니다.
+각 폴더의 `.env.example`을 복사해서 시작해도 됩니다.
 
 ### 2. Sepolia에 배포
 
@@ -28,10 +44,20 @@ npm run deploy:sepolia
 
 배포가 끝나면 출력된 `MarketFactory` 주소를 복사합니다. 이미 배포된 Factory 주소가 있다면 그 값을 `VITE_FACTORY_ADDRESS`에 넣으면 됩니다.
 
-### 3. 프런트 실행
+### 3. 백엔드 실행
+
+```bash
+cd backend
+npm install
+npm run prisma:generate
+npm run prisma:push
+npm run dev
+```
+
+`MATCHER_PRIVATE_KEY`를 넣으면 백엔드가 주기적으로 오픈 오더를 체결하려고 시도합니다. 이 계정은 가스비를 낼 수 있어야 하고, 실제 체결 전에 약간의 fUSDC float가 있으면 더 안정적입니다.
+
+### 4. 프런트 실행
 
 ```bash
 npm run dev
 ```
-
-브라우저에서 MetaMask를 Sepolia에 연결한 뒤, Factory 주소가 자동으로 들어오지 않으면 홈 화면에 직접 붙여넣으면 됩니다.

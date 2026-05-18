@@ -1,5 +1,6 @@
-import { formatUnits, parseUnits, type Signer } from 'ethers';
-import { useEffect, useState } from 'react';
+import { formatUnits, parseUnits, type Signer, type TypedDataField } from 'ethers';
+import { useEffect, useMemo, useState } from 'react';
+import { fetchMarketMatches, fetchMarketTrades, fetchOrderbookSnapshot, submitMarketOrder, type BackendMatchesResponse, type BackendOrderbookSnapshot, type BackendTrade } from '../lib/backend';
 import { getMarketContract, getUsdcContract, loadFactoryMarkets, type MarketSummary } from '../lib/contracts';
 
 interface HolderRankingEntry {
@@ -17,16 +18,59 @@ interface MarketDetailPageProps {
   onUpdated: () => void;
 }
 
-const DEFAULT_YES_PRICE = 600000000000000000n;
+const PRICE_PER_SET = 1000000000000000000n;
+const DEFAULT_PRICE = 500000000000000000n;
+const ORDER_TYPES: Record<string, TypedDataField[]> = {
+  Order: [
+    { name: 'maker', type: 'address' },
+    { name: 'targetId', type: 'uint256' },
+    { name: 'isBuy', type: 'bool' },
+    { name: 'price', type: 'uint256' },
+    { name: 'amount', type: 'uint256' },
+    { name: 'expiry', type: 'uint256' },
+    { name: 'nonce', type: 'uint256' },
+  ],
+} as const;
+
+type OrderBookSide = BackendOrderbookSnapshot['yes'];
+
+function formatPriceWei(value?: string) {
+  if (!value) return '--';
+  return Number(formatUnits(BigInt(value), 18)).toFixed(3);
+}
+
+function bestPrice(side: OrderBookSide | undefined, key: 'bids' | 'asks') {
+  return side?.[key]?.[0]?.price;
+}
+
+function midpointPrice(side: OrderBookSide | undefined) {
+  const bid = bestPrice(side, 'bids');
+  const ask = bestPrice(side, 'asks');
+  if (bid && ask) {
+    return (BigInt(bid) + BigInt(ask)) / 2n;
+  }
+  if (bid) return BigInt(bid);
+  if (ask) return BigInt(ask);
+  return DEFAULT_PRICE;
+}
+
+function orderBookToRows(side: OrderBookSide | undefined, type: 'bids' | 'asks') {
+  return (side?.[type] ?? []).slice(0, 5);
+}
+
+function tradeSideLabel(trade: BackendTrade) {
+  return trade.isBuy ? 'BUY' : 'SELL';
+}
 
 export default function MarketDetailPage({ provider, signer, market, factoryAddress, onBack, isSepolia, onUpdated }: MarketDetailPageProps) {
   const [fakeUsdcAddress, setFakeUsdcAddress] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<BackendOrderbookSnapshot | null>(null);
+  const [trades, setTrades] = useState<BackendTrade[]>([]);
+  const [matches, setMatches] = useState<BackendMatchesResponse | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
 
-  // Market state
-  const [yesPrice, setYesPrice] = useState<bigint | null>(null);
-  const [oneFusdc, setOneFusdc] = useState<bigint | null>(null);
   const [userBalance, setUserBalance] = useState<bigint | null>(null);
   const [userYesBalance, setUserYesBalance] = useState<bigint | null>(null);
   const [userNoBalance, setUserNoBalance] = useState<bigint | null>(null);
@@ -35,10 +79,10 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
   const [rankingsLoading, setRankingsLoading] = useState(false);
   const [rankingsError, setRankingsError] = useState<string | null>(null);
 
-  // Order state
   const [orderType, setOrderType] = useState<'buy' | 'sell'>('buy');
   const [pendingSide, setPendingSide] = useState<'0' | '1'>('0');
   const [amount, setAmount] = useState('10');
+  const [limitPrice, setLimitPrice] = useState('0.500');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
@@ -47,11 +91,14 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
       if (!isSepolia) setError('Sepolia 네트워크로 전환하세요.');
       return;
     }
+
     let cancelled = false;
     async function load() {
+      const activeProvider = provider;
+      if (!activeProvider) return;
       setLoading(true);
       try {
-        const result = await loadFactoryMarkets(provider!, factoryAddress);
+        const result = await loadFactoryMarkets(activeProvider, factoryAddress);
         if (!cancelled) setFakeUsdcAddress(result.fakeUsdcAddress);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load');
@@ -59,47 +106,78 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
         if (!cancelled) setLoading(false);
       }
     }
+
     void load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [provider, factoryAddress, isSepolia]);
 
   useEffect(() => {
     let isMounted = true;
-    async function loadPricesAndBalance() {
-      if (!signer || !market || !fakeUsdcAddress) return;
+
+    async function loadBalances() {
+      if (!signer || !market) return;
+
       try {
         const marketContract = getMarketContract(market.address, signer);
-        const usdc = getUsdcContract(fakeUsdcAddress, signer);
+        const usdc = fakeUsdcAddress ? getUsdcContract(fakeUsdcAddress, signer) : null;
         const address = await signer.getAddress();
-        
-        // Fetch user's YES/NO token balances and fUSDC balance
-        const [price, pricePerSet, balance, yesBalance, noBalance] = await Promise.all([
-          marketContract.yesPrice(),
-          marketContract.PRICE_PER_SET(),
-          usdc.balanceOf(address),
-          marketContract.balanceOf(address, 0), // YES token
-          marketContract.balanceOf(address, 1)  // NO token
+        const [balance, yesBalance, noBalance] = await Promise.all([
+          usdc ? usdc.balanceOf(address) : Promise.resolve(0n),
+          marketContract.balanceOf(address, 0),
+          marketContract.balanceOf(address, 1),
         ]);
-        
+
         if (isMounted) {
-          setYesPrice(price as bigint);
-          setOneFusdc(pricePerSet as bigint);
           setUserBalance(balance as bigint);
           setUserYesBalance(yesBalance as bigint);
           setUserNoBalance(noBalance as bigint);
         }
       } catch {
         if (isMounted) {
-          setYesPrice(DEFAULT_YES_PRICE);
-          setOneFusdc(1000000000000000000n);
+          setUserBalance(null);
           setUserYesBalance(0n);
           setUserNoBalance(0n);
         }
       }
     }
-    loadPricesAndBalance();
-    return () => { isMounted = false; };
+
+    void loadBalances();
+    return () => {
+      isMounted = false;
+    };
   }, [market, signer, fakeUsdcAddress, isSubmitting]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadOrderbook() {
+      if (!market) return;
+      try {
+        const [orderbook, tradeResponse, matchResponse] = await Promise.all([
+          fetchOrderbookSnapshot(market.address),
+          fetchMarketTrades(market.address, 20),
+          fetchMarketMatches(market.address),
+        ]);
+        if (!isMounted) return;
+        setSnapshot(orderbook);
+        setTrades(tradeResponse.trades);
+        setMatches(matchResponse);
+      } catch (err) {
+        if (!isMounted) return;
+        setSnapshot(null);
+        setTrades([]);
+        setMatches(null);
+        setStatus(err instanceof Error ? err.message : 'Failed to load orderbook');
+      }
+    }
+
+    void loadOrderbook();
+    return () => {
+      isMounted = false;
+    };
+  }, [market, refreshTick]);
 
   useEffect(() => {
     let isMounted = true;
@@ -118,8 +196,7 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
 
         for (const event of transferEvents) {
           const parsed = marketContract.interface.parseLog(event);
-          if (!parsed) continue;
-          if (parsed.name !== 'TransferSingle') continue;
+          if (!parsed || parsed.name !== 'TransferSingle') continue;
 
           const from = String(parsed.args.from).toLowerCase();
           const to = String(parsed.args.to).toLowerCase();
@@ -150,13 +227,13 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
 
         const yesEntries = Array.from(balances.entries())
           .map(([address, balance]) => ({ address, balance: balance.yes }))
-          .filter(entry => entry.balance > 0n)
+          .filter((entry) => entry.balance > 0n)
           .sort(compareRank)
           .slice(0, 10);
 
         const noEntries = Array.from(balances.entries())
           .map(([address, balance]) => ({ address, balance: balance.no }))
-          .filter(entry => entry.balance > 0n)
+          .filter((entry) => entry.balance > 0n)
           .sort(compareRank)
           .slice(0, 10);
 
@@ -176,8 +253,146 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
     }
 
     void loadHolderRankings();
-    return () => { isMounted = false; };
+    return () => {
+      isMounted = false;
+    };
   }, [market, provider]);
+
+  const yesSide = snapshot?.yes;
+  const noSide = snapshot?.no;
+  const yesMarkPrice = midpointPrice(yesSide);
+  const noMarkPrice = midpointPrice(noSide);
+  const yesProb = Number((yesMarkPrice * 100n) / PRICE_PER_SET);
+  const noProb = 100 - yesProb;
+
+  const yesValue = userYesBalance !== null ? (userYesBalance * yesMarkPrice) / PRICE_PER_SET : 0n;
+  const noValue = userNoBalance !== null ? (userNoBalance * noMarkPrice) / PRICE_PER_SET : 0n;
+  const totalPositionValue = yesValue + noValue;
+
+  const hasPosition = (userYesBalance ?? 0n) > 0n || (userNoBalance ?? 0n) > 0n;
+  const selectedSideLabel = pendingSide === '0' ? 'YES' : 'NO';
+  const selectedTokenBalance = pendingSide === '0' ? (userYesBalance ?? 0n) : (userNoBalance ?? 0n);
+  const selectedSideBook = pendingSide === '0' ? yesSide : noSide;
+  const selectedPriceFallback = orderType === 'buy' ? bestPrice(selectedSideBook, 'asks') : bestPrice(selectedSideBook, 'bids');
+  const selectedPriceWei = selectedPriceFallback ? BigInt(selectedPriceFallback) : DEFAULT_PRICE;
+
+  const amountWei = useMemo(() => {
+    try {
+      const parsed = parseUnits(amount || '0', 18);
+      return parsed > 0n ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [amount]);
+
+  const priceWei = useMemo(() => {
+    try {
+      const parsed = parseUnits(limitPrice || '0', 18);
+      return parsed > 0n ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [limitPrice]);
+
+  useEffect(() => {
+    const fallback = selectedPriceWei === DEFAULT_PRICE ? '0.500' : formatUnits(selectedPriceWei, 18);
+    setLimitPrice(fallback);
+  }, [orderType, pendingSide, selectedPriceWei, market?.address]);
+
+  async function handleSubmitOrder() {
+    if (!signer) {
+      setStatus('지갑을 먼저 연결하세요.');
+      return;
+    }
+    if (!market || !fakeUsdcAddress) {
+      setStatus('시장 정보를 불러오는 중입니다.');
+      return;
+    }
+    if (!amountWei || amountWei <= 0n) {
+      setStatus('수량이 올바르지 않습니다.');
+      return;
+    }
+    if (!priceWei || priceWei <= 0n) {
+      setStatus('가격이 올바르지 않습니다.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus('주문 서명과 등록을 진행 중...');
+
+    try {
+      const marketContract = getMarketContract(market.address, signer);
+      const usdc = getUsdcContract(fakeUsdcAddress, signer);
+      const address = await signer.getAddress();
+      const network = signer.provider ? await signer.provider.getNetwork() : null;
+      const expiry = BigInt(Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60);
+      const nonce = BigInt(Date.now());
+      const isBuy = orderType === 'buy';
+      const targetId = Number(pendingSide) as 0 | 1;
+
+      if (isBuy) {
+        const requiredCost = (amountWei * priceWei) / PRICE_PER_SET;
+        const allowance = await usdc.allowance(address, market.address);
+        if (allowance < requiredCost) {
+          setStatus('USDC 승인 중...');
+          const approveTx = await usdc.approve(market.address, requiredCost);
+          await approveTx.wait();
+        }
+      } else {
+        const approved = await marketContract.isApprovedForAll(address, market.address);
+        if (!approved) {
+          setStatus('포지션 승인 중...');
+          const approvePositionTx = await marketContract.setApprovalForAll(market.address, true);
+          await approvePositionTx.wait();
+        }
+      }
+
+      if (!network) {
+        throw new Error('네트워크 정보를 불러올 수 없습니다.');
+      }
+
+      const message = {
+        maker: address,
+        targetId: BigInt(targetId),
+        isBuy,
+        price: priceWei,
+        amount: amountWei,
+        expiry,
+        nonce,
+      };
+
+      const signature = await signer.signTypedData(
+        {
+          name: 'PredictionMarket',
+          version: '1',
+          chainId: Number(network.chainId),
+          verifyingContract: market.address,
+        },
+        ORDER_TYPES,
+        message,
+      );
+
+      await submitMarketOrder(market.address, {
+        maker: address,
+        targetId,
+        isBuy,
+        price: priceWei.toString(),
+        amount: amountWei.toString(),
+        expiry: expiry.toString(),
+        nonce: nonce.toString(),
+        signature,
+      });
+
+      setStatus('주문이 등록되었습니다.');
+      setRefreshTick((value) => value + 1);
+      onUpdated();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Order failed');
+    } finally {
+      setIsSubmitting(false);
+      setTimeout(() => setStatus(null), 3500);
+    }
+  }
 
   if (!market) {
     return (
@@ -188,115 +403,34 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
     );
   }
 
-  const noPrice = yesPrice !== null && oneFusdc !== null ? oneFusdc - yesPrice : null;
-  const currentYesPrice = yesPrice ?? DEFAULT_YES_PRICE;
-  const currentNoPrice = noPrice ?? (oneFusdc ?? 1000000000000000000n) - DEFAULT_YES_PRICE;
-  
-  const yesProb = oneFusdc ? Number((currentYesPrice * 100n) / oneFusdc) : 50;
-  const noProb = 100 - yesProb;
-
-  const yesValue = userYesBalance !== null ? (userYesBalance * currentYesPrice) / (oneFusdc ?? 1000000000000000000n) : 0n;
-  const noValue = userNoBalance !== null ? (userNoBalance * currentNoPrice) / (oneFusdc ?? 1000000000000000000n) : 0n;
-  const totalPositionValue = yesValue + noValue;
-  
-  const hasPosition = (userYesBalance ?? 0n) > 0n || (userNoBalance ?? 0n) > 0n;
-  const selectedSideLabel = pendingSide === '0' ? 'YES' : 'NO';
-  const selectedTokenBalance = pendingSide === '0' ? (userYesBalance ?? 0n) : (userNoBalance ?? 0n);
-  const selectedTokenPrice = pendingSide === '0' ? currentYesPrice : currentNoPrice;
-
-  // Betting logic
-  function getAmountWei() {
-    try {
-      const parsed = parseUnits(amount || '0', 18);
-      return parsed > 0n ? parsed : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function setAmountFromPercent(percent: number) {
-    const sourceBalance = orderType === 'buy' ? userBalance : selectedTokenBalance;
-    if (!sourceBalance || sourceBalance <= 0n) return;
-    const targetWei = (sourceBalance * BigInt(percent)) / 100n;
-    setAmount(formatUnits(targetWei, 18));
-  }
-
-  async function handleOrder() {
-    if (!signer) { setStatus('지갑을 먼저 연결하세요.'); return; }
-    const amountWei = getAmountWei();
-    if (!amountWei) { setStatus('베팅 금액이 올바르지 않습니다.'); return; }
-    if (!oneFusdc) { setStatus('컨트랙트 값을 불러올 수 없습니다.'); return; }
-
-    if (orderType === 'sell' && amountWei > selectedTokenBalance) {
-      setStatus('보유 수량보다 많이 팔 수 없습니다.');
-      return;
-    }
-
-    setIsSubmitting(true);
-    setStatus(orderType === 'sell' ? '판매를 진행 중...' : '승인과 베팅을 진행 중...');
-    try {
-      const marketContract = getMarketContract(market!.address, signer);
-
-      if (orderType === 'buy') {
-        const usdc = getUsdcContract(fakeUsdcAddress, signer);
-        const approveTx = await usdc.approve(market!.address, amountWei);
-        await approveTx.wait();
-
-        const betTx = await marketContract.bet(Number(pendingSide), amountWei);
-        await betTx.wait();
-        setStatus('베팅이 완료되었습니다.');
-      } else {
-        const sellTx = await marketContract.sellToken(Number(pendingSide), amountWei);
-        await sellTx.wait();
-        setStatus('판매가 완료되었습니다.');
-      }
-
-      onUpdated();
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Order failed');
-    } finally {
-      setIsSubmitting(false);
-      setTimeout(() => setStatus(null), 3000);
-    }
-  }
-
-  const amountWei = getAmountWei();
-  const previewBuySharesWei = amountWei !== null && oneFusdc !== null ? (amountWei * oneFusdc) / selectedTokenPrice : null;
-  const previewSellReturnWei = amountWei !== null && oneFusdc !== null ? (amountWei * selectedTokenPrice) / oneFusdc : null;
-  const amountLabel = orderType === 'buy' ? 'Amount (fUSDC)' : `Amount (${selectedSideLabel} Shares)`;
-  const balanceLabel = orderType === 'buy'
-    ? `Balance: ${userBalance !== null ? parseFloat(formatUnits(userBalance, 18)).toFixed(2) : '0'} fUSDC`
-    : `Available: ${parseFloat(formatUnits(selectedTokenBalance, 18)).toFixed(2)} ${selectedSideLabel}`;
-  const amountPlaceholder = orderType === 'buy' ? '예: 10' : '예: 5';
-  const submitLabel = orderType === 'buy' ? 'Place Order' : `Sell ${selectedSideLabel}`;
-  const summaryLabel = orderType === 'buy' ? 'Est. Shares' : 'Expected Receive';
-  const summaryValue = amountWei
-    ? parseFloat(formatUnits(orderType === 'buy' ? (previewBuySharesWei ?? 0n) : (previewSellReturnWei ?? 0n), 18)).toFixed(2)
-    : '0.00';
-  const summarySuffix = orderType === 'buy' ? '' : ' fUSDC';
-  const inputDisabled = market.isResolved;
-  const canSellSelectedSide = selectedTokenBalance > 0n;
+  const amountCostWei = amountWei && priceWei ? (amountWei * priceWei) / PRICE_PER_SET : null;
+  const summaryLabel = orderType === 'buy' ? 'Est. Cost' : 'Est. Receive';
+  const summaryValue = amountCostWei ? formatUnits(amountCostWei, 18) : '0.000';
+  const summarySuffix = ' fUSDC';
+  const currentPriceLabel = priceWei ? formatUnits(priceWei, 18) : '0.000';
   const formatRankingBalance = (value: bigint) => parseFloat(formatUnits(value, 18)).toFixed(2);
   const shortenAddress = (address: string) => `${address.slice(0, 6)}...${address.slice(-4)}`;
+  const formatMatchAmount = (value: string) => formatUnits(BigInt(value), 18);
+  const formatMatchPrice = (value: string) => formatUnits(BigInt(value), 18);
 
   function RankingPanel({ title, accent, entries }: { title: string; accent: string; entries: HolderRankingEntry[] }) {
     return (
-      <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+      <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
         <div className="mb-3 flex items-center justify-between">
-          <h4 className="text-sm font-bold uppercase tracking-wide text-white">{title}</h4>
+          <h4 className="text-xs font-bold uppercase tracking-[0.28em] text-slate-500">{title}</h4>
           <span className={`text-xs font-semibold ${accent}`}>Top 10</span>
         </div>
         {entries.length === 0 ? (
-          <p className="text-sm text-slate-400">아직 랭킹 데이터가 없습니다.</p>
+          <p className="text-sm text-slate-500">아직 랭킹 데이터가 없습니다.</p>
         ) : (
           <div className="space-y-2">
             {entries.map((entry, index) => (
-              <div key={entry.address} className="flex items-center justify-between gap-3 rounded-lg bg-slate-950/60 px-3 py-2">
+              <div key={entry.address} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2.5">
                 <div className="flex min-w-0 items-center gap-3">
                   <span className={`w-6 text-right text-xs font-bold ${accent}`}>#{index + 1}</span>
-                  <span className="truncate font-mono text-sm text-slate-200">{shortenAddress(entry.address)}</span>
+                  <span className="truncate font-mono text-sm text-slate-600">{shortenAddress(entry.address)}</span>
                 </div>
-                <span className="shrink-0 text-sm font-semibold text-white">{formatRankingBalance(entry.balance)}</span>
+                <span className="shrink-0 text-sm font-semibold text-slate-950">{formatRankingBalance(entry.balance)}</span>
               </div>
             ))}
           </div>
@@ -306,233 +440,415 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
   }
 
   return (
-    <div className="max-w-[1200px] mx-auto pb-12 w-full font-sans">
-      <button onClick={onBack} className="mb-6 flex items-center text-sm font-medium text-slate-400 hover:text-white transition">
-        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7"/></svg>
+    <div className="space-y-6">
+      <button onClick={onBack} className="pm-btn-secondary w-fit px-4 py-2 text-sm font-semibold">
+        <svg className="mr-1 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+        </svg>
         Markets
       </button>
 
-      <div className="flex flex-col lg:flex-row gap-10">
-        
-        {/* Left Column: Market Info */}
-        <div className="flex-1 space-y-8">
-          <div className="flex items-center gap-4">
-            {market.metadata.image ? (
-              <img src={market.metadata.image} alt="" className="w-16 h-16 rounded-full object-cover shadow-sm bg-slate-800" />
-            ) : (
-              <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center text-slate-500">?</div>
-            )}
-            <h1 className="text-3xl lg:text-4xl font-bold text-white leading-tight">{market.metadata.name}</h1>
-          </div>
-
-          <div className="flex items-center gap-6 border-b border-white/10 pb-8">
-            <div className="flex flex-col">
-              <span className="text-6xl font-bold text-emerald-400">{yesProb}%</span>
-              <span className="text-sm font-semibold text-slate-400 mt-2 uppercase tracking-wide">Yes</span>
-            </div>
-            <div className="flex flex-col">
-              <span className="text-6xl font-bold text-rose-400">{noProb}%</span>
-              <span className="text-sm font-semibold text-slate-400 mt-2 uppercase tracking-wide">No</span>
-            </div>
-          </div>
-
-          {loading && <p className="text-sm text-slate-400">Loading...</p>}
-          {error && <p className="text-sm text-rose-400">{error}</p>}
-          {rankingsError && <p className="text-sm text-rose-400">{rankingsError}</p>}
-
-          {/* YOUR POSITION SECTION (NEW) */}
-          {hasPosition && (
-            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-6 space-y-4">
-              <h3 className="text-lg font-bold text-white">Your Position</h3>
-              <div className="grid grid-cols-2 gap-4">
-                {/* YES Position */}
-                {(userYesBalance ?? 0n) > 0n && (
-                  <div className="rounded-lg bg-slate-800/50 border border-emerald-500/30 p-4 space-y-2">
-                    <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wide">YES</p>
-                    <p className="text-2xl font-bold text-white">{parseFloat(formatUnits(userYesBalance ?? 0n, 18)).toFixed(2)}</p>
-                    <p className="text-xs text-slate-400">
-                      @ ${parseFloat(formatUnits(currentYesPrice, 18)).toFixed(2)}
-                    </p>
-                    <p className="text-sm font-semibold text-emerald-300">
-                      ${parseFloat(formatUnits(yesValue, 18)).toFixed(2)}
-                    </p>
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_392px]">
+        <div className="space-y-6">
+          <section className="pm-panel overflow-hidden rounded-[32px]">
+            <div className="grid gap-0 lg:grid-cols-[280px_minmax(0,1fr)]">
+              <div className="relative min-h-[240px] bg-slate-100 lg:min-h-full">
+                {market.metadata.image ? (
+                  <img src={market.metadata.image} alt={market.metadata.name} className="h-full w-full object-cover" />
+                ) : (
+                  <div className="flex h-full min-h-[240px] w-full items-center justify-center bg-[linear-gradient(135deg,#dbeafe_0%,#f8fafc_60%,#ecfeff_100%)] text-sm font-medium text-slate-400">
+                    No image
                   </div>
                 )}
-                
-                {/* NO Position */}
-                {(userNoBalance ?? 0n) > 0n && (
-                  <div className="rounded-lg bg-slate-800/50 border border-rose-500/30 p-4 space-y-2">
-                    <p className="text-xs font-semibold text-rose-400 uppercase tracking-wide">NO</p>
-                    <p className="text-2xl font-bold text-white">{parseFloat(formatUnits(userNoBalance ?? 0n, 18)).toFixed(2)}</p>
-                    <p className="text-xs text-slate-400">
-                      @ ${parseFloat(formatUnits(currentNoPrice, 18)).toFixed(2)}
-                    </p>
-                    <p className="text-sm font-semibold text-rose-300">
-                      ${parseFloat(formatUnits(noValue, 18)).toFixed(2)}
-                    </p>
+                <div className="absolute left-4 top-4 rounded-full border border-white/70 bg-white/90 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.24em] text-slate-700 shadow-sm">
+                  {market.isResolved ? 'Resolved' : 'Live'}
+                </div>
+              </div>
+
+              <div className="p-6 md:p-7">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="pm-kicker">Market</span>
+                  <span className="pm-chip font-mono text-[11px] text-slate-500">{shortenAddress(market.address)}</span>
+                  <span className={`pm-chip ${market.isResolved ? 'pm-chip-no' : 'pm-chip-yes'}`}>
+                    {market.isResolved ? 'Settled' : 'Trading'}
+                  </span>
+                </div>
+
+                <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950 lg:text-4xl">{market.metadata.name}</h1>
+                <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600">{market.metadata.rules || 'No additional information provided.'}</p>
+
+                <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="pm-statbox p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">YES</p>
+                    <p className="mt-2 text-3xl font-semibold text-emerald-700">{yesProb}%</p>
+                    <p className="mt-1 text-sm text-slate-500">Mid {formatUnits(yesMarkPrice, 18)} fUSDC</p>
                   </div>
-                )}
-              </div>
+                  <div className="pm-statbox p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">NO</p>
+                    <p className="mt-2 text-3xl font-semibold text-rose-700">{noProb}%</p>
+                    <p className="mt-1 text-sm text-slate-500">Mid {formatUnits(noMarkPrice, 18)} fUSDC</p>
+                  </div>
+                  <div className="pm-statbox p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Position value</p>
+                    <p className="mt-2 text-2xl font-semibold text-slate-950">${parseFloat(formatUnits(totalPositionValue, 18)).toFixed(2)}</p>
+                    <p className="mt-1 text-sm text-slate-500">Current holdings</p>
+                  </div>
+                  <div className="pm-statbox p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">End</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-950">{new Date(Number(market.endTime) * 1000).toLocaleString()}</p>
+                    <p className="mt-1 text-sm text-slate-500">Contract schedule</p>
+                  </div>
+                </div>
 
-              {/* Total Position Value */}
-              <div className="border-t border-white/10 pt-4">
-                <p className="text-xs text-slate-400 uppercase tracking-wide font-semibold mb-1">Total Position Value</p>
-                <p className="text-3xl font-bold text-white">
-                  ${parseFloat(formatUnits(totalPositionValue, 18)).toFixed(2)}
-                </p>
+                <div className="mt-6 flex flex-wrap items-center gap-2">
+                  <span className="pm-chip">Network-backed</span>
+                  <span className="pm-chip">Orderbook preview</span>
+                  {market.isResolved ? <span className="pm-chip pm-chip-no">Winning side: {market.winningSide === 0n ? 'YES' : 'NO'}</span> : null}
+                </div>
               </div>
             </div>
-          )}
+          </section>
 
-          <div className="space-y-4">
-            <h3 className="text-xl font-semibold text-white">About</h3>
-            {market.metadata.rules ? (
-              <p className="text-base text-slate-300 whitespace-pre-wrap leading-relaxed">{market.metadata.rules}</p>
-            ) : (
-              <p className="text-sm text-slate-400">No additional information provided.</p>
-            )}
-            <div className="space-y-4 mt-6">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xl font-semibold text-white">Holder Rankings</h3>
-                {rankingsLoading && <span className="text-xs text-slate-400">Loading...</span>}
-              </div>
-              <div className="grid gap-4 lg:grid-cols-2">
-                <RankingPanel title="YES holders" accent="text-emerald-400" entries={yesRankings} />
-                <RankingPanel title="NO holders" accent="text-rose-400" entries={noRankings} />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4 mt-6">
-              <div className="rounded-xl bg-white/5 p-4 border border-white/10">
-                <p className="text-xs text-slate-500 mb-1 uppercase tracking-wide font-semibold">Contract Address</p>
-                <p className="text-sm text-slate-300 font-mono break-all">{market.address}</p>
-              </div>
-              <div className="rounded-xl bg-white/5 p-4 border border-white/10">
-                <p className="text-xs text-slate-500 mb-1 uppercase tracking-wide font-semibold">End Time</p>
-                <p className="text-sm text-slate-300">{new Date(Number(market.endTime) * 1000).toLocaleString()}</p>
-              </div>
-            </div>
-            {market.isResolved && (
-              <div className="mt-4 rounded-xl bg-sky-500/10 border border-sky-500/20 p-5">
-                <h4 className="font-semibold text-sky-400 text-lg mb-1">Market Resolved</h4>
-                <p className="text-base text-sky-200">This market has concluded. The winning side is {market.winningSide === 0n ? 'YES' : 'NO'}.</p>
-              </div>
-            )}
-          </div>
-        </div>
+          {loading ? <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-500">Loading...</div> : null}
+          {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">{error}</div> : null}
+          {rankingsError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">{rankingsError}</div> : null}
 
-        {/* Right Column: Order Panel (Sticky) */}
-        <div className="lg:w-[380px] shrink-0">
-          <div className="sticky top-6 rounded-3xl border border-white/10 bg-slate-900 shadow-2xl overflow-hidden">
-            {/* Tabs */}
-            <div className="flex border-b border-white/10">
-              <button 
-                onClick={() => setOrderType('buy')}
-                className={`flex-1 py-4 text-sm font-bold transition ${orderType === 'buy' ? 'text-white border-b-2 border-sky-500' : 'text-slate-500 hover:text-slate-300'}`}
-              >
-                Buy
-              </button>
-              <button 
-                onClick={() => {
-                  setOrderType('sell');
-                  if ((userYesBalance ?? 0n) > 0n) {
-                    setPendingSide('0');
-                  } else if ((userNoBalance ?? 0n) > 0n) {
-                    setPendingSide('1');
-                  }
-                }}
-                className={`flex-1 py-4 text-sm font-bold transition ${orderType === 'sell' ? 'text-white border-b-2 border-sky-500' : 'text-slate-500 hover:text-slate-300'}`}
-                title={hasPosition ? 'Sell your existing position' : 'You do not hold any position yet'}
-              >
-                Sell
-              </button>
+          {hasPosition ? (
+            <section className="pm-panel rounded-[28px] p-5 md:p-6">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="pm-kicker">Your Position</p>
+                  <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Current holdings in this market</h2>
+                </div>
+                <span className="pm-chip pm-chip-yes">Open position</span>
+              </div>
+
+              <div className="mt-5 grid gap-4 md:grid-cols-2">
+                {(userYesBalance ?? 0n) > 0n ? (
+                  <div className="pm-statbox p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-700">YES</p>
+                    <p className="mt-2 text-3xl font-semibold text-slate-950">{formatRankingBalance(userYesBalance ?? 0n)}</p>
+                    <p className="mt-1 text-sm text-slate-500">@ {formatUnits(yesMarkPrice, 18)} fUSDC</p>
+                    <p className="mt-2 text-sm font-semibold text-emerald-700">${parseFloat(formatUnits(yesValue, 18)).toFixed(2)}</p>
+                  </div>
+                ) : null}
+
+                {(userNoBalance ?? 0n) > 0n ? (
+                  <div className="pm-statbox p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-rose-700">NO</p>
+                    <p className="mt-2 text-3xl font-semibold text-slate-950">{formatRankingBalance(userNoBalance ?? 0n)}</p>
+                    <p className="mt-1 text-sm text-slate-500">@ {formatUnits(noMarkPrice, 18)} fUSDC</p>
+                    <p className="mt-2 text-sm font-semibold text-rose-700">${parseFloat(formatUnits(noValue, 18)).toFixed(2)}</p>
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
+
+          <section className="pm-panel rounded-[28px] p-5 md:p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="pm-kicker">Orderbook</p>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Best bids and asks</h2>
+              </div>
+              <span className="pm-chip">Snapshot</span>
             </div>
 
-            <div className="p-5 space-y-6">
-              {/* Outcome Selection */}
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setPendingSide('0')}
-                  disabled={market.isResolved || (orderType === 'sell' && !((userYesBalance ?? 0n) > 0n))}
-                  className={`flex-1 flex flex-col items-center justify-center p-3 rounded-xl border-2 transition ${pendingSide === '0' ? 'border-emerald-500 bg-emerald-500/10' : 'border-transparent bg-slate-800 hover:bg-slate-700'} ${market.isResolved || (orderType === 'sell' && !((userYesBalance ?? 0n) > 0n)) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <span className={`text-base font-bold ${pendingSide === '0' ? 'text-emerald-400' : 'text-slate-300'}`}>Yes {yesProb}%</span>
-                </button>
-                <button
-                  onClick={() => setPendingSide('1')}
-                  disabled={market.isResolved || (orderType === 'sell' && !((userNoBalance ?? 0n) > 0n))}
-                  className={`flex-1 flex flex-col items-center justify-center p-3 rounded-xl border-2 transition ${pendingSide === '1' ? 'border-rose-500 bg-rose-500/10' : 'border-transparent bg-slate-800 hover:bg-slate-700'} ${market.isResolved || (orderType === 'sell' && !((userNoBalance ?? 0n) > 0n)) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <span className={`text-base font-bold ${pendingSide === '1' ? 'text-rose-400' : 'text-slate-300'}`}>No {noProb}%</span>
-                </button>
-              </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              {[
+                { label: 'YES', side: yesSide, accent: 'emerald' },
+                { label: 'NO', side: noSide, accent: 'rose' },
+              ].map((entry) => (
+                <div key={entry.label} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h4 className={`text-sm font-bold uppercase tracking-[0.24em] ${entry.accent === 'emerald' ? 'text-emerald-700' : 'text-rose-700'}`}>{entry.label}</h4>
+                    <span className="text-xs font-medium text-slate-500">Bid / Ask</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Bids</p>
+                      <div className="space-y-2">
+                        {orderBookToRows(entry.side, 'bids').length === 0 ? (
+                          <p className="text-sm text-slate-500">No bids</p>
+                        ) : orderBookToRows(entry.side, 'bids').map((level) => (
+                          <div key={`${entry.label}-bid-${level.price}`} className="flex items-center justify-between rounded-2xl border border-white bg-white px-3 py-2">
+                            <span className="font-mono text-slate-700">{formatPriceWei(level.price)}</span>
+                            <span className="text-slate-500">{formatUnits(BigInt(level.amount), 18)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Asks</p>
+                      <div className="space-y-2">
+                        {orderBookToRows(entry.side, 'asks').length === 0 ? (
+                          <p className="text-sm text-slate-500">No asks</p>
+                        ) : orderBookToRows(entry.side, 'asks').map((level) => (
+                          <div key={`${entry.label}-ask-${level.price}`} className="flex items-center justify-between rounded-2xl border border-white bg-white px-3 py-2">
+                            <span className="font-mono text-slate-700">{formatPriceWei(level.price)}</span>
+                            <span className="text-slate-500">{formatUnits(BigInt(level.amount), 18)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
 
-              {orderType === 'sell' && !canSellSelectedSide && (
-                <p className="text-xs text-rose-300">선택한 방향의 보유 토큰이 없습니다.</p>
+          <section className="pm-panel rounded-[28px] p-5 md:p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="pm-kicker">Matching</p>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Matching preview</h2>
+              </div>
+              <span className="pm-chip">Crossable orders</span>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              {([
+                { label: 'YES', preview: matches?.yes, accent: 'emerald' },
+                { label: 'NO', preview: matches?.no, accent: 'rose' },
+              ] as const).map((entry) => (
+                <div key={entry.label} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h4 className={`text-sm font-bold uppercase tracking-[0.24em] ${entry.accent === 'emerald' ? 'text-emerald-700' : 'text-rose-700'}`}>{entry.label}</h4>
+                    <span className="text-xs font-medium text-slate-500">crossable orders</span>
+                  </div>
+                  <div className="space-y-2 text-sm text-slate-600">
+                    <div className="flex items-center justify-between rounded-2xl border border-white bg-white px-3 py-2">
+                      <span>Best Bid</span>
+                      <span className="font-mono text-slate-950">{entry.preview?.bestBid ? formatMatchPrice(entry.preview.bestBid) : '--'}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-2xl border border-white bg-white px-3 py-2">
+                      <span>Best Ask</span>
+                      <span className="font-mono text-slate-950">{entry.preview?.bestAsk ? formatMatchPrice(entry.preview.bestAsk) : '--'}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-2xl border border-white bg-white px-3 py-2">
+                      <span>Total Matched</span>
+                      <span className="font-mono text-slate-950">{entry.preview ? formatMatchAmount(entry.preview.totalMatchedAmount) : '--'}</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 space-y-2">
+                    {entry.preview?.matches.length ? (
+                      entry.preview.matches.slice(0, 5).map((match) => (
+                        <div key={`${entry.label}-${match.buyOrderHash}-${match.sellOrderHash}`} className="rounded-2xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-semibold text-slate-950">{formatMatchAmount(match.amount)} shares</span>
+                            <span className="font-mono text-slate-500">@ {formatMatchPrice(match.executionPrice)}</span>
+                          </div>
+                          <div className="mt-1 flex items-center justify-between gap-3">
+                            <span className="truncate">Buy {shortenAddress(match.buyMaker)}</span>
+                            <span className="truncate">Sell {shortenAddress(match.sellMaker)}</span>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-slate-500">No crossable orders yet.</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="pm-panel rounded-[28px] p-5 md:p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="pm-kicker">Trades</p>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Recent trades</h2>
+              </div>
+              <span className="pm-chip">Latest activity</span>
+            </div>
+
+            <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-white">
+              {trades.length === 0 ? (
+                <div className="p-4 text-sm text-slate-500">No trades yet.</div>
+              ) : (
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3">Side</th>
+                      <th className="px-4 py-3">Price</th>
+                      <th className="px-4 py-3">Amount</th>
+                      <th className="px-4 py-3">Time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trades.map((trade) => (
+                      <tr key={trade.id} className="border-t border-slate-100">
+                        <td className={`px-4 py-3 font-semibold ${trade.isBuy ? 'text-emerald-700' : 'text-rose-700'}`}>{tradeSideLabel(trade)}</td>
+                        <td className="px-4 py-3 text-slate-700">{formatPriceWei(trade.price)}</td>
+                        <td className="px-4 py-3 text-slate-700">{formatUnits(BigInt(trade.amount), 18)}</td>
+                        <td className="px-4 py-3 text-slate-500">{new Date(trade.createdAt).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </section>
+
+          <section className="pm-panel rounded-[28px] p-5 md:p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="pm-kicker">Rankings</p>
+                <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Holder rankings</h2>
+              </div>
+              {rankingsLoading && <span className="text-xs font-medium text-slate-500">Loading...</span>}
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <RankingPanel title="YES holders" accent="text-emerald-700" entries={yesRankings} />
+              <RankingPanel title="NO holders" accent="text-rose-700" entries={noRankings} />
+            </div>
+          </section>
+
+          <section className="pm-panel rounded-[28px] p-5 md:p-6">
+            <p className="pm-kicker">About</p>
+            <div className="mt-4 space-y-4">
+              {market.metadata.rules ? (
+                <p className="whitespace-pre-wrap text-base leading-7 text-slate-600">{market.metadata.rules}</p>
+              ) : (
+                <p className="text-sm text-slate-500">No additional information provided.</p>
               )}
 
-              {/* Amount Input */}
-              <div className="space-y-2">
-                <div className="flex justify-between items-center text-xs font-semibold text-slate-400 uppercase tracking-wide">
-                  <span>{amountLabel}</span>
-                  <span>{balanceLabel}</span>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="pm-statbox p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Contract Address</p>
+                  <p className="mt-2 break-all font-mono text-sm text-slate-700">{market.address}</p>
                 </div>
-                <div className="relative">
-                  <input
-                    type="number"
-                    value={amount}
-                    onChange={e => setAmount(e.target.value)}
-                    disabled={inputDisabled || (orderType === 'sell' && !canSellSelectedSide)}
-                    placeholder={amountPlaceholder}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-4 text-xl font-bold text-white outline-none focus:border-sky-500 transition disabled:opacity-50"
-                  />
-                  <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">{orderType === 'buy' ? 'fUSDC' : selectedSideLabel}</div>
-                </div>
-                <div className="flex items-center gap-2 pt-1">
-                  <button type="button" onClick={() => setAmountFromPercent(10)} className="flex-1 rounded-lg bg-white/5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10">10%</button>
-                  <button type="button" onClick={() => setAmountFromPercent(25)} className="flex-1 rounded-lg bg-white/5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10">25%</button>
-                  <button type="button" onClick={() => setAmountFromPercent(50)} className="flex-1 rounded-lg bg-white/5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10">50%</button>
-                  <button type="button" onClick={() => setAmountFromPercent(100)} className="flex-1 rounded-lg bg-sky-500/20 py-1.5 text-xs font-medium text-sky-300 transition hover:bg-sky-500/40">100%</button>
+                <div className="pm-statbox p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">End Time</p>
+                  <p className="mt-2 text-sm text-slate-700">{new Date(Number(market.endTime) * 1000).toLocaleString()}</p>
                 </div>
               </div>
 
-              {/* Returns Summary */}
-              <div className="space-y-3 pt-2">
-                <div className="flex justify-between items-center text-sm font-medium">
-                  <span className="text-slate-400">{summaryLabel}</span>
-                  <span className="text-white">{amountWei ? summaryValue : '0.00'}{summarySuffix}</span>
+              {market.isResolved ? (
+                <div className="rounded-[24px] border border-sky-200 bg-sky-50 p-5">
+                  <h4 className="mb-1 text-lg font-semibold text-sky-700">Market Resolved</h4>
+                  <p className="text-base text-sky-900">This market has concluded. The winning side is {market.winningSide === 0n ? 'YES' : 'NO'}.</p>
                 </div>
-                <div className="flex justify-between items-center text-sm font-medium">
-                  <span className="text-slate-400">{orderType === 'buy' ? 'Potential return' : 'Sell price'}</span>
-                  <span className="text-emerald-400 text-lg font-bold">
-                    {amountWei ? `$${parseFloat(formatUnits(orderType === 'buy' ? (previewBuySharesWei ?? 0n) : (previewSellReturnWei ?? 0n), 18)).toFixed(2)}` : '$0.00'}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center text-sm font-medium">
-                  <span className="text-slate-400">Avg price</span>
-                  <span className="text-white">
-                    ${parseFloat(formatUnits(selectedTokenPrice, 18)).toFixed(2)}
-                  </span>
-                </div>
-              </div>
-
-              {/* Submit Button */}
-              {status && (
-                <div className={`p-4 rounded-xl text-sm font-bold text-center ${status.includes('완료') ? 'bg-emerald-500/20 text-emerald-300' : status.includes('승인') ? 'bg-sky-500/20 text-sky-300' : 'bg-rose-500/20 text-rose-300'}`}>
-                  {status}
-                </div>
-              )}
-              
-              <button
-                onClick={handleOrder}
-                disabled={isSubmitting || market.isResolved || !amountWei || (orderType === 'sell' && !canSellSelectedSide) || (orderType === 'sell' && amountWei !== null && amountWei > selectedTokenBalance)}
-                className="w-full rounded-2xl bg-sky-500 py-4 text-lg font-bold text-white transition hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isSubmitting ? 'Processing...' : (market.isResolved ? 'Market Resolved' : submitLabel)}
-              </button>
+              ) : null}
             </div>
-          </div>
+          </section>
         </div>
-        
+
+        <aside className="space-y-4 self-start xl:sticky xl:top-6">
+          <section className="pm-panel rounded-[32px] p-5 md:p-6">
+            <div>
+              <p className="pm-kicker">Create Order</p>
+              <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Place signed order</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">주문은 백엔드에 저장되고, 실제 체결은 온체인으로 처리됩니다.</p>
+            </div>
+
+            <div className="mt-5 grid grid-cols-2 gap-2 rounded-[24px] bg-slate-100 p-2">
+              {(['buy', 'sell'] as const).map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => setOrderType(type)}
+                  className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${orderType === type ? 'bg-slate-950 text-white shadow-sm' : 'bg-white text-slate-600 hover:text-slate-950'}`}
+                >
+                  {type === 'buy' ? 'BUY' : 'SELL'}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-2 rounded-[24px] bg-slate-100 p-2">
+              {(['0', '1'] as const).map((side) => (
+                <button
+                  key={side}
+                  type="button"
+                  onClick={() => setPendingSide(side)}
+                  className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${pendingSide === side ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:text-slate-950'}`}
+                >
+                  {side === '0' ? 'YES' : 'NO'}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <label className="pm-label">
+                Amount (Shares)
+                <input
+                  value={amount}
+                  onChange={(event) => setAmount(event.target.value)}
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  placeholder="예: 10"
+                  className="pm-input mt-2"
+                />
+              </label>
+
+              <label className="pm-label">
+                Limit Price (fUSDC)
+                <input
+                  value={limitPrice}
+                  onChange={(event) => setLimitPrice(event.target.value)}
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  placeholder="예: 0.500"
+                  className="pm-input mt-2"
+                />
+              </label>
+            </div>
+
+            <div className="mt-5 space-y-2 rounded-[24px] border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              <div className="flex items-center justify-between gap-4">
+                <span>Side</span>
+                <span className="font-semibold text-slate-950">{selectedSideLabel}</span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span>Order Type</span>
+                <span className="font-semibold text-slate-950">{orderType.toUpperCase()}</span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span>Limit Price</span>
+                <span className="font-semibold text-slate-950">{currentPriceLabel} fUSDC</span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span>{summaryLabel}</span>
+                <span className="font-semibold text-emerald-700">
+                  {summaryValue}{summarySuffix}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span>Wallet Balance</span>
+                <span className="font-semibold text-slate-950">{userBalance !== null ? formatUnits(userBalance, 18) : '0'} fUSDC</span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void handleSubmitOrder()}
+              disabled={isSubmitting || market.isResolved}
+              className="pm-btn-primary mt-5 w-full disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {isSubmitting ? 'Working...' : 'Sign & Submit Order'}
+            </button>
+
+            {status ? <p className="mt-3 text-sm font-medium text-slate-600">{status}</p> : null}
+            <p className="mt-2 text-xs leading-5 text-slate-500">주문은 백엔드에 저장되고, 체결 엔진이 같은 형태의 signed order를 나중에 fillOrder로 처리합니다.</p>
+          </section>
+
+          <section className="pm-panel rounded-[28px] p-5">
+            <p className="pm-kicker">Quick stats</p>
+            <div className="mt-4 grid gap-3">
+              <div className="pm-statbox p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">YES balance</p>
+                <p className="mt-2 text-xl font-semibold text-slate-950">{selectedSideLabel === 'YES' ? formatUnits(selectedTokenBalance, 18) : formatUnits(userYesBalance ?? 0n, 18)}</p>
+              </div>
+              <div className="pm-statbox p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">NO balance</p>
+                <p className="mt-2 text-xl font-semibold text-slate-950">{selectedSideLabel === 'NO' ? formatUnits(selectedTokenBalance, 18) : formatUnits(userNoBalance ?? 0n, 18)}</p>
+              </div>
+            </div>
+          </section>
+        </aside>
       </div>
     </div>
   );

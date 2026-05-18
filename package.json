@@ -7,7 +7,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "compile": "hardhat compile",
-    "deploy:sepolia": "hardhat ignition deploy ./ignition/modules/DeployMarkets.ts --network sepolia"
+    "deploy:sepolia": "hardhat ignition deploy ./ignition/modules/DeployMarkets.ts --network sepolia",
+    "dev:be": "npm --prefix backend run dev",
+    "build:be": "npm --prefix backend run build",
+    "start:be": "npm --prefix backend run start",
+    "prisma:be": "npm --prefix backend run prisma:generate"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-ignition": "^3.1.5",

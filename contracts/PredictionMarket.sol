@@ -156,7 +156,7 @@ contract PredictionMarket is ERC1155, EIP712, ReentrancyGuard {
         if (order.maker == address(0)) revert InvalidMaker();
         if (order.targetId != YES && order.targetId != NO) revert InvalidTokenId();
         if (fillAmount == 0 || order.amount == 0) revert AmountMustBeGreaterThanZero();
-        if (order.price == 0 || order.price > PRICE_PER_SET) revert InvalidPrice();
+        if (order.price == 0 || order.price >= PRICE_PER_SET) revert InvalidPrice();
         if (block.timestamp > order.expiry) revert OrderExpired();
         if (order.nonce < minOrderNonce[order.maker]) revert OrderCancelled();
 
@@ -169,19 +169,33 @@ contract PredictionMarket is ERC1155, EIP712, ReentrancyGuard {
         uint256 remainingAmount = order.amount - filledAmount;
         if (fillAmount > remainingAmount) revert FillExceedsRemainingAmount();
 
-        uint256 usdcAmount = (fillAmount * order.price) / PRICE_PER_SET;
-        if (usdcAmount == 0) revert FillTooSmall();
+        uint256 makerUsdcAmount = (fillAmount * order.price) / PRICE_PER_SET;
+        if (makerUsdcAmount == 0) revert FillTooSmall();
+
+        uint256 takerPrice = PRICE_PER_SET - order.price;
+        uint256 takerUsdcAmount = (fillAmount * takerPrice) / PRICE_PER_SET;
+        if (takerUsdcAmount == 0) revert FillTooSmall();
 
         orderFilledAmount[orderHash] = filledAmount + fillAmount;
 
         if (order.isBuy) {
-            fakeUSDCToken.safeTransferFrom(order.maker, taker, usdcAmount);
-            _safeTransferFrom(taker, order.maker, order.targetId, fillAmount, "");
+            fakeUSDCToken.safeTransferFrom(order.maker, address(this), makerUsdcAmount);
+            fakeUSDCToken.safeTransferFrom(taker, address(this), takerUsdcAmount);
+
+            _mint(order.maker, order.targetId, fillAmount, "");
+            
+            uint256 oppositeId = (order.targetId == YES) ? NO : YES;
+            _mint(taker, oppositeId, fillAmount, "");
         } else {
-            _safeTransferFrom(order.maker, taker, order.targetId, fillAmount, "");
-            fakeUSDCToken.safeTransferFrom(taker, order.maker, usdcAmount);
+            uint256 oppositeId = (order.targetId == YES) ? NO : YES;
+            
+            _burn(order.maker, order.targetId, fillAmount);
+            _burn(taker, oppositeId, fillAmount);
+
+            fakeUSDCToken.safeTransfer(order.maker, makerUsdcAmount);
+            fakeUSDCToken.safeTransfer(taker, takerUsdcAmount);
         }
 
-        emit OrderFilled(orderHash, order.maker, taker, order.targetId, order.isBuy, order.price, fillAmount, usdcAmount);
+        emit OrderFilled(orderHash, order.maker, taker, order.targetId, order.isBuy, order.price, fillAmount, makerUsdcAmount);
     }
 }
