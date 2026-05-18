@@ -1,4 +1,4 @@
-import { formatUnits, parseUnits, type Signer, type TypedDataField } from 'ethers';
+import { MaxUint256, formatUnits, parseUnits, type Signer, type TypedDataField } from 'ethers';
 import { useEffect, useMemo, useState } from 'react';
 import { fetchMarketMatches, fetchMarketTrades, fetchOrderbookSnapshot, submitMarketOrder, type BackendMatchesResponse, type BackendOrderbookSnapshot, type BackendTrade } from '../lib/backend';
 import { getMarketContract, getUsdcContract, loadFactoryMarkets, type MarketSummary } from '../lib/contracts';
@@ -316,6 +316,10 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
       setStatus('가격이 올바르지 않습니다.');
       return;
     }
+    if (orderType === 'sell' && amountWei > selectedTokenBalance) {
+      setStatus(`보유 포지션이 부족합니다. 최대 ${formatUnits(selectedTokenBalance, 18)} ${selectedSideLabel}를 판매할 수 있습니다.`);
+      return;
+    }
 
     setIsSubmitting(true);
     setStatus('주문 서명과 등록을 진행 중...');
@@ -335,7 +339,7 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
         const allowance = await usdc.allowance(address, market.address);
         if (allowance < requiredCost) {
           setStatus('USDC 승인 중...');
-          const approveTx = await usdc.approve(market.address, requiredCost);
+          const approveTx = await usdc.approve(market.address, MaxUint256);
           await approveTx.wait();
         }
       } else {
@@ -781,6 +785,51 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
                   placeholder="예: 10"
                   className="pm-input mt-2"
                 />
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try {
+                        const current = parseUnits(amount || '0', 18);
+                        const adjusted = current + (current * 10n) / 100n;
+                        setAmount(formatUnits(adjusted, 18));
+                      } catch { }
+                    }}
+                    className="rounded-lg bg-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-slate-600"
+                  >
+                    +10%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const baseBalance = orderType === 'buy' ? (userBalance ?? 0n) : selectedTokenBalance;
+                      setAmount(formatUnits((baseBalance * 25n) / 100n, 18));
+                    }}
+                    className="rounded-lg bg-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-slate-600"
+                  >
+                    25%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const baseBalance = orderType === 'buy' ? (userBalance ?? 0n) : selectedTokenBalance;
+                      setAmount(formatUnits((baseBalance * 50n) / 100n, 18));
+                    }}
+                    className="rounded-lg bg-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-slate-600"
+                  >
+                    50%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const baseBalance = orderType === 'buy' ? (userBalance ?? 0n) : selectedTokenBalance;
+                      setAmount(formatUnits(baseBalance, 18));
+                    }}
+                    className="rounded-lg bg-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-slate-600"
+                  >
+                    100%
+                  </button>
+                </div>
               </label>
 
               <label className="pm-label">

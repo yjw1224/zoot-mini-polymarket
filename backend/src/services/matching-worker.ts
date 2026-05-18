@@ -8,6 +8,7 @@ import { getCrossMatchPreview } from './matching.js';
 
 // Minimal ABI for fillOrders
 const marketAbi = parseAbi([
+  'function fakeUSDCToken() view returns (address)',
   'function fillOrders((address maker,uint256 targetId,bool isBuy,uint256 price,uint256 amount,uint256 expiry,uint256 nonce)[] orders,bytes[] signatures,uint256[] fillAmounts)',
   'function balanceOf(address account,uint256 id) view returns (uint256)',
   'error OnlyAdmin()',
@@ -38,6 +39,15 @@ const marketAbi = parseAbi([
   'error ERC20InsufficientAllowance(address spender,uint256 allowance,uint256 needed)',
 ]);
 
+const usdcAbi = parseAbi([
+  'function allowance(address owner,address spender) view returns (uint256)',
+  'function approve(address spender,uint256 amount) returns (bool)',
+  'function balanceOf(address account) view returns (uint256)',
+  'function faucet()',
+]);
+
+const PRICE_PER_SET = 1000000000000000000n;
+
 let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
 
@@ -56,6 +66,69 @@ function toOrderInput(o: any) {
 async function loadOrder(orderHash: string, marketAddress: string) {
   return prisma.marketOrder.findFirst({ where: { orderHash, marketAddress } });
 }
+
+function estimateTakerUsdcRequirement(orders: any[], fillAmounts: bigint[]) {
+  return orders.reduce((total, order, index) => {
+    if (!order.isBuy) return total;
+
+    const fillAmount = fillAmounts[index] ?? 0n;
+    const takerPrice = PRICE_PER_SET - BigInt(order.price);
+    return total + (fillAmount * takerPrice) / PRICE_PER_SET;
+  }, 0n);
+}
+
+async function ensureMatcherUsdcReady(walletClient: any, marketAddress: string, requiredUsdcAmount: bigint) {
+  if (requiredUsdcAmount <= 0n) return;
+
+  const takerAddress = walletClient.account?.address as Address | undefined;
+  if (!takerAddress) {
+    throw new Error('Matcher wallet address is unavailable');
+  }
+
+  const fakeUsdcAddress = (await publicClient.readContract({
+    address: marketAddress as Address,
+    abi: marketAbi,
+    functionName: 'fakeUSDCToken',
+  })) as Address;
+
+  const [allowance, balance] = await Promise.all([
+    publicClient.readContract({
+      address: fakeUsdcAddress,
+      abi: usdcAbi,
+      functionName: 'allowance',
+      args: [takerAddress, marketAddress as Address],
+    }) as Promise<bigint>,
+    publicClient.readContract({
+      address: fakeUsdcAddress,
+      abi: usdcAbi,
+      functionName: 'balanceOf',
+      args: [takerAddress],
+    }) as Promise<bigint>,
+  ]);
+
+  if (balance < requiredUsdcAmount) {
+    const faucetHash = (await walletClient.writeContract({
+      address: fakeUsdcAddress,
+      abi: usdcAbi,
+      functionName: 'faucet',
+      args: [],
+    })) as `0x${string}`;
+
+    await publicClient.waitForTransactionReceipt({ hash: faucetHash });
+  }
+
+  if (allowance < requiredUsdcAmount) {
+    const approveHash = (await walletClient.writeContract({
+      address: fakeUsdcAddress,
+      abi: usdcAbi,
+      functionName: 'approve',
+      args: [marketAddress as Address, requiredUsdcAmount],
+    })) as `0x${string}`;
+
+    await publicClient.waitForTransactionReceipt({ hash: approveHash });
+  }
+}
+
 
 async function syncFilledOrderState(tx: any, orderRow: any, nextFilledAmount: bigint) {
   const status = nextFilledAmount >= BigInt(orderRow.amount) ? 'FILLED' : 'OPEN';
@@ -178,9 +251,16 @@ async function settleMatch(walletClient: any, marketAddress: string, targetId: n
   const preparedSell = await prepareOrderForFill(sellOrder);
   const preparedBuy = await prepareOrderForFill(buyOrder);
 
-  const orders = [preparedSell.orderInput, preparedBuy.orderInput];
-  const signatures = [preparedSell.signature, preparedBuy.signature];
+  const orders = [preparedBuy.orderInput, preparedSell.orderInput];
+  const signatures = [preparedBuy.signature, preparedSell.signature];
   const fillAmounts = [amount, amount];
+
+  try {
+    await ensureMatcherUsdcReady(walletClient, marketAddress, estimateTakerUsdcRequirement(orders, fillAmounts));
+  } catch (err) {
+    console.error('[matching-worker] matcher USDC setup failed', err, { marketAddress, match });
+    return;
+  }
 
   // send tx
   try {
@@ -213,19 +293,21 @@ async function settleMatch(walletClient: any, marketAddress: string, targetId: n
         ...(preparedBuy.orderInput.maker && preparedBuy.orderInput.maker !== buyOrder.maker ? { maker: preparedBuy.orderInput.maker } : {}),
       });
 
-      await tx.tradeFill.create({ data: {
-        marketAddress,
-        orderHash: txHash,
-        maker: preparedBuy.orderInput.maker,
-        taker: preparedSell.orderInput.maker,
-        targetId,
-        isBuy: true,
-        price: match.executionPrice,
-        amount: amount.toString(),
-        usdcAmount: ((amount * BigInt(match.executionPrice)) / 10n ** 18n).toString(),
-        txHash,
-        blockNumber: Number(receipt.blockNumber),
-      }});
+      await tx.tradeFill.create({
+        data: {
+          marketAddress,
+          orderHash: txHash,
+          maker: preparedBuy.orderInput.maker,
+          taker: preparedSell.orderInput.maker,
+          targetId,
+          isBuy: true,
+          price: match.executionPrice,
+          amount: amount.toString(),
+          usdcAmount: ((amount * BigInt(match.executionPrice)) / 10n ** 18n).toString(),
+          txHash,
+          blockNumber: Number(receipt.blockNumber),
+        }
+      });
     });
   } catch (err) {
     console.error('[matching-worker] settle error', err, { marketAddress, match });

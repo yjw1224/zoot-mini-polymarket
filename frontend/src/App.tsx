@@ -178,6 +178,31 @@ export default function App() {
     }
   }
 
+  async function refreshSelectedMarket() {
+    const currentMarketAddress = selectedMarket?.address;
+    if (!provider || !factoryAddress || !isSepolia || !currentMarketAddress) {
+      return;
+    }
+
+    try {
+      const result = await loadFactoryMarkets(provider, factoryAddress);
+      const updatedMarket = result.markets.find(
+        (market) => market.address.toLowerCase() === currentMarketAddress.toLowerCase(),
+      );
+
+      if (updatedMarket) {
+        setSelectedMarket(updatedMarket);
+      }
+    } catch {
+      // ignore detail refresh failures; the list refresh still proceeds
+    }
+  }
+
+  async function handleMarketUpdated() {
+    setRefreshMarkets((value) => value + 1);
+    await refreshSelectedMarket();
+  }
+
   const navItems = useMemo(
     () => [
       { key: 'home' as const, label: 'Home' },
@@ -250,8 +275,8 @@ export default function App() {
               type="button"
               onClick={() => setPage(item.key)}
               className={`rounded-full px-4 py-2 text-sm font-semibold transition ${page === item.key
-                  ? 'bg-slate-950 text-white shadow-[0_10px_30px_rgba(15,23,42,0.18)]'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-950'
+                ? 'bg-slate-950 text-white shadow-[0_10px_30px_rgba(15,23,42,0.18)]'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-950'
                 }`}
             >
               {item.label}
@@ -299,7 +324,7 @@ export default function App() {
             signer={signer}
             factoryAddress={factoryAddress}
             onCreated={() => {
-              setRefreshMarkets((value) => value + 1);
+              void handleMarketUpdated();
               setPage('markets');
             }}
             isSepolia={isSepolia}
@@ -314,7 +339,9 @@ export default function App() {
             factoryAddress={factoryAddress}
             onBack={() => setPage('markets')}
             isSepolia={isSepolia}
-            onUpdated={() => setRefreshMarkets((v) => v + 1)}
+            onUpdated={() => {
+              void handleMarketUpdated();
+            }}
           />
         ) : null}
 
@@ -325,7 +352,9 @@ export default function App() {
             factoryAddress={factoryAddress}
             isSepolia={isSepolia}
             onBack={() => setPage('home')}
-            onUpdated={() => setRefreshMarkets((v) => v + 1)}
+            onUpdated={() => {
+              void handleMarketUpdated();
+            }}
             onOpenMarket={(market) => {
               setSelectedMarket(market);
               setPage('detail');
