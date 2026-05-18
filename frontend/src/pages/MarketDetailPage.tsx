@@ -1,6 +1,6 @@
 import { MaxUint256, formatUnits, parseUnits, type Signer, type TypedDataField } from 'ethers';
 import { useEffect, useMemo, useState } from 'react';
-import { fetchMarketMatches, fetchMarketTrades, fetchOrderbookSnapshot, submitMarketOrder, type BackendMatchesResponse, type BackendOrderbookSnapshot, type BackendTrade } from '../lib/backend';
+import { fetchHolderRankings, fetchMarketMatches, fetchMarketTrades, fetchOrderbookSnapshot, submitMarketOrder, type BackendHolderRankingEntry, type BackendMatchesResponse, type BackendOrderbookSnapshot, type BackendTrade } from '../lib/backend';
 import { getMarketContract, getUsdcContract, loadFactoryMarkets, type MarketSummary } from '../lib/contracts';
 
 interface HolderRankingEntry {
@@ -76,7 +76,6 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
   const [userNoBalance, setUserNoBalance] = useState<bigint | null>(null);
   const [yesRankings, setYesRankings] = useState<HolderRankingEntry[]>([]);
   const [noRankings, setNoRankings] = useState<HolderRankingEntry[]>([]);
-  const [rankingsLoading, setRankingsLoading] = useState(false);
   const [rankingsError, setRankingsError] = useState<string | null>(null);
 
   const [orderType, setOrderType] = useState<'buy' | 'sell'>('buy');
@@ -183,63 +182,21 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
     let isMounted = true;
 
     async function loadHolderRankings() {
-      if (!provider || !market) return;
+      if (!market) return;
 
-      setRankingsLoading(true);
       setRankingsError(null);
 
       try {
-        const marketContract = getMarketContract(market.address, provider);
-        const transferEvents = await marketContract.queryFilter(marketContract.filters.TransferSingle(), 0, 'latest');
+        const result = await fetchHolderRankings(market.address);
 
-        const balances = new Map<string, { yes: bigint; no: bigint }>();
-
-        for (const event of transferEvents) {
-          const parsed = marketContract.interface.parseLog(event);
-          if (!parsed || parsed.name !== 'TransferSingle') continue;
-
-          const from = String(parsed.args.from).toLowerCase();
-          const to = String(parsed.args.to).toLowerCase();
-          const id = BigInt(parsed.args.id);
-          const value = BigInt(parsed.args.value);
-
-          if (id !== 0n && id !== 1n) continue;
-
-          if (from !== '0x0000000000000000000000000000000000000000') {
-            const current = balances.get(from) ?? { yes: 0n, no: 0n };
-            if (id === 0n) current.yes -= value;
-            if (id === 1n) current.no -= value;
-            balances.set(from, current);
-          }
-
-          if (to !== '0x0000000000000000000000000000000000000000') {
-            const current = balances.get(to) ?? { yes: 0n, no: 0n };
-            if (id === 0n) current.yes += value;
-            if (id === 1n) current.no += value;
-            balances.set(to, current);
-          }
-        }
-
-        const compareRank = (left: HolderRankingEntry, right: HolderRankingEntry) => {
-          if (left.balance === right.balance) return left.address.localeCompare(right.address);
-          return left.balance > right.balance ? -1 : 1;
-        };
-
-        const yesEntries = Array.from(balances.entries())
-          .map(([address, balance]) => ({ address, balance: balance.yes }))
-          .filter((entry) => entry.balance > 0n)
-          .sort(compareRank)
-          .slice(0, 10);
-
-        const noEntries = Array.from(balances.entries())
-          .map(([address, balance]) => ({ address, balance: balance.no }))
-          .filter((entry) => entry.balance > 0n)
-          .sort(compareRank)
-          .slice(0, 10);
+        const mapEntry = (entry: BackendHolderRankingEntry): HolderRankingEntry => ({
+          address: entry.address,
+          balance: BigInt(entry.balance),
+        });
 
         if (isMounted) {
-          setYesRankings(yesEntries);
-          setNoRankings(noEntries);
+          setYesRankings(result.yes.map(mapEntry));
+          setNoRankings(result.no.map(mapEntry));
         }
       } catch (err) {
         if (isMounted) {
@@ -247,8 +204,6 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
           setYesRankings([]);
           setNoRankings([]);
         }
-      } finally {
-        if (isMounted) setRankingsLoading(false);
       }
     }
 
@@ -256,7 +211,7 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
     return () => {
       isMounted = false;
     };
-  }, [market, provider]);
+  }, [market, refreshTick]);
 
   const yesSide = snapshot?.yes;
   const noSide = snapshot?.no;
@@ -701,7 +656,6 @@ export default function MarketDetailPage({ provider, signer, market, factoryAddr
                 <p className="pm-kicker">Rankings</p>
                 <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Holder rankings</h2>
               </div>
-              {rankingsLoading && <span className="text-xs font-medium text-slate-500">Loading...</span>}
             </div>
             <div className="grid gap-4 lg:grid-cols-2">
               <RankingPanel title="YES holders" accent="text-emerald-700" entries={yesRankings} />

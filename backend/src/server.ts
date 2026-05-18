@@ -6,6 +6,7 @@ import { registerMarketsRoutes } from './routes/markets.js';
 import { registerOrderbookRoutes } from './routes/orderbook.js';
 import { registerMatchingRoutes } from './routes/matching.js';
 import { registerTradesRoutes } from './routes/trades.js';
+import { registerHoldersRoutes } from './routes/holders.js';
 import { startMatchingWorker } from './services/matching-worker.js';
 
 async function main() {
@@ -21,6 +22,7 @@ async function main() {
   await app.register(registerOrderbookRoutes);
   await app.register(registerMatchingRoutes);
   await app.register(registerTradesRoutes);
+  await app.register(registerHoldersRoutes);
   const stopWorker = startMatchingWorker();
 
   app.addHook('onClose', async () => {

@@ -65,6 +65,19 @@ export type BackendMatchesResponse = {
   no: BackendMatchPreview;
 };
 
+export type BackendHolderRankingEntry = {
+  address: string;
+  balance: string;
+};
+
+export type BackendHolderRankingsResponse = {
+  marketAddress: string;
+  yes: BackendHolderRankingEntry[];
+  no: BackendHolderRankingEntry[];
+  excludedAddresses: string[];
+  updatedAt: string;
+};
+
 export const backendBaseUrl = import.meta.env.VITE_BACKEND_URL ?? 'https://silver-enigma-pqvv995g455f6j6-4000.app.github.dev';
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -94,6 +107,10 @@ export async function fetchMarketTrades(marketAddress: string, limit = 20) {
 
 export async function fetchMarketMatches(marketAddress: string) {
   return requestJson<BackendMatchesResponse>(`/markets/${marketAddress}/matches`);
+}
+
+export async function fetchHolderRankings(marketAddress: string) {
+  return requestJson<BackendHolderRankingsResponse>(`/markets/${marketAddress}/holders`);
 }
 
 export type BackendCreateOrderInput = {
