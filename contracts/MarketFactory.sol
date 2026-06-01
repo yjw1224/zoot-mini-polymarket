@@ -60,7 +60,7 @@ contract MarketFactory is Ownable {
         market = address(newMarket);
 
         // 3. 팩토리가 보유한 depositAmount를 새로 만든 마켓이 가져갈 수 있도록 승인(Approve)
-        IERC20(fakeUSDCToken).safeApprove(market, depositAmount);
+        IERC20(fakeUSDCToken).safeIncreaseAllowance(market, depositAmount);
 
         // 4. 마켓의 초기 유동성 함수를 팩토리가 대신 호출하여 AMM 풀 채우기 (K값 확정)
         newMarket.initializeLiquidity(depositAmount);
