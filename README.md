@@ -1,8 +1,12 @@
 ## ZOOT-MINI-POLYMARKET
 
 Project ZOOT는 POLYMARKET과 유사한 예측 시장 플랫폼입니다.
-시장 참가자들은 YES 또는 NO에 가상의 fUSDC(fakeUSDT)를 베팅할 수 있습니다.
+시장 참가자들은 YES 또는 NO 포지션에 가상의 fUSDC(fakeUSDT)를 베팅하거나 유동성을 공급할 수 있습니다.
 Chainlink, api 오라클을 통하여 결과를 불러오고, 그에 따라 승패 여부를 결정합니다.
+
+이 프로젝트의 거래 방식은 오더북 매칭이 아니라 AMM(Constant Product) 방식입니다.
+YES 풀과 NO 풀이 `YES * NO = k` 관계를 유지하도록 설계되어, 각 풀의 잔고 비율로 가격이 실시간 산출됩니다.
+거래가 발생하면 한쪽 풀은 줄고 다른 쪽 풀은 늘어나며, 그 변화량에 따라 체결 수량과 슬리피지가 자동으로 계산됩니다.
 
 사용자는 지갑을 연결한 후 예치금 (fUSDC)을 내고 새로운 베팅을 만들거나, 다른 사용자가 만든 베팅에 참가할 수 있습니다.
 
@@ -26,8 +30,6 @@ FACTORY_ADDRESS=0x...
 DATABASE_URL="file:./dev.db"
 CORS_ORIGIN=https://silver-enigma-pqvv995g455f6j6-5173.app.github.dev
 INDEX_START_BLOCK=0
-MATCHER_PRIVATE_KEY=0x... # optional, enables the on-chain matching worker
-MATCH_INTERVAL_MS=10000
 
 # /.env
 SEPOLIA_RPC_URL=https://...
@@ -54,7 +56,11 @@ npm run prisma:push
 npm run dev
 ```
 
-`MATCHER_PRIVATE_KEY`를 넣으면 백엔드가 주기적으로 오픈 오더를 체결하려고 시도합니다. 이 계정은 가스비를 낼 수 있어야 하고, 실제 체결 전에 약간의 fUSDC float가 있으면 더 안정적입니다.
+백엔드는 AMM 풀 상태, 주문/거래 기록, 정산 상태를 관리합니다.
+별도의 오더북 매칭 워커는 필요하지 않으며, 가격과 수량은 YES/NO 풀의 비율과 `YES * NO = k` invariant를 기준으로 계산됩니다.
+
+참고로, 한쪽 풀의 잔고가 커질수록 해당 방향의 가격은 낮아지고 반대 방향 가격은 높아집니다.
+즉, 사용자는 현재 풀 상태에 따라 체결 가격과 예상 수량을 즉시 확인할 수 있습니다.
 
 ### 4. 프런트 실행
 
